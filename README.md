@@ -8,6 +8,8 @@ You talk to the supervisor the way you'd talk to a lead. It hands work to the ri
 keeps talking with you while they work, and tells you what came back. You can also step into any
 agent's thread and talk to it directly.
 
+![Picard, the supervisor, with reports from Janeway and Pike, and Sisko waiting on an ask](docs/images/team.png)
+
 ## Why
 
 Most agent tools are one agent in one terminal. That works until you want help with several things
@@ -32,20 +34,25 @@ problems.
 
 ## What it's like
 
-You ask the supervisor: *"Rook, our homelab agent, should find out why fleet's CI is red and fix it.
-Meanwhile, what did we decide about the backup schedule?"*
+You tell Picard, your supervisor: *"Janeway, the login form accepts empty passwords; fix it. Sisko,
+retire the old CI runner. Pike, is the onboarding page still current?"*
 
-1. The supervisor delegates to Rook in a new thread and answers your question from its notebook.
-2. Rook works in his own git worktree on a branch, finds the problem, commits a fix and opens a PR.
-3. Rook runs on Claude, so a GPT reviewer reads the diff. It finds a real bug, and the finding goes
-   back to Rook, who fixes it and commits again. Round two approves, with two notes.
-4. Rook's report reaches the supervisor with the verdict and the notes. The supervisor tells you in
-   two sentences, and you merge.
-5. Later, Rook wants to restart a service on a production host. The judge reads it as risky, and
-   you get *"Rook needs you"*, with the command, an Allow button and a Deny button.
+1. Picard delegates three jobs and keeps talking with you.
+2. Janeway works in her own git worktree on a branch. She fixes the form, adds a test and commits.
+3. Janeway runs on GPT, so a Claude reviewer reads her diff and finds that a password of only spaces
+   still passes. The finding goes back to her. She fixes it, and round two approves with one note.
+4. Pike reports two stale lines in the onboarding page and offers to fix them.
+5. Sisko checks that nothing still uses the old runner, and consults Kirk about CI. Then he wants to
+   `incus delete` it. That's irreversible, so the judge stops and asks you, with Allow, Always allow
+   and Deny.
+6. Picard sums it all up in two short paragraphs and tells you Sisko is waiting on you.
 
-Overnight, a scheduled check notices a host stopped answering. It wakes Rook, who investigates and
-reports through the supervisor. It's waiting for you in the morning.
+Overnight, a scheduled check notices a host stopped answering. It wakes Sisko, who investigates and
+reports through Picard. It's waiting for you in the morning.
+
+| A cross-family review, with a fix round | An ask, in dark mode |
+|---|---|
+| ![Copilot's Claude blocks Janeway's first fix; round two approves](docs/images/review.png) | ![Sisko consults Kirk, then the judge asks before incus delete](docs/images/ask.png) |
 
 ## Features
 
@@ -99,10 +106,10 @@ duties:
     check: for h in host-a host-b; do timeout 3 bash -c "</dev/tcp/$h/22" && echo "$h up" || echo "$h down"; done
     brief: A host's reachability changed. Find out why and say what you found.
 ---
-# Rook
+# Sisko
 
-You are Rook: calm, economical with words, and precise about the state of the homelab. You prefer
-the reversible move.
+You are Benjamin Sisko: steady, protective of the station, and precise about what's running where.
+You look before you change anything.
 
 ## Responsibilities
 - The homelab's configuration repo: Ansible, OpenTofu, Caddy.
