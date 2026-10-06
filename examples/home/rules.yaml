@@ -1,0 +1,18 @@
+# The judge's rules. A pattern is the start of a command, word by word, matched against the whole command: `*` is one
+# word, `**` any number, `[w]` an optional word, `a|b` either, and `*` inside a word any characters. `re:<regex>` is
+# tested against the command's text instead. Quoted text is never a command, so `echo 'tofu destroy'` is just echo.
+# Your ask rules beat your allow rules and the built-in ones; your allow rules beat the built-in asks. "Always allow"
+# answers go to ~/.local/share/stomp/allowed.yaml (same shape), and beat everything for that exact command.
+
+# allow:
+#   - ssh * uptime|df|systemctl status **
+#   - ansible-playbook ** --check **
+
+# ask:
+#   - aws **
+
+# agents:
+#   teg:
+#     allow:
+#       - ansible-playbook -i inventory/dev **
+#       - tofu plan **

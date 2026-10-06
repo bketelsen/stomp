@@ -1,0 +1,39 @@
+# stomp's configuration. Copy examples/home to ~/.config/stomp and edit.
+listen: 127.0.0.1:7310
+
+providers:
+  # Any OpenAI-compatible server. No auth; the model list is fetched at startup.
+  local: { baseUrl: http://127.0.0.1:8080/v1 }
+
+# Agent files name models by alias. Swapping a provider is a one-line change here.
+models:
+  claude-opus: anthropic/claude-opus-5-5
+  claude-sonnet: anthropic/claude-sonnet-5-5
+  gpt: openai/gpt-6.1-sol
+  gemini: github-copilot/gemini-3.8-flash
+  local: local/my-model
+  # A model pi-ai's catalog doesn't know:
+  # new-thing: { ref: github-copilot/new-model-id, api: openai-responses, contextWindow: 200000, maxTokens: 32000 }
+
+# Extra model-id patterns (regex) → family, merged over the built-in table.
+families: {}
+
+bash:
+  timeoutSeconds: 600
+
+# Cross-family review of agents' commits. Each author gets the first model here from another family. Without a pool,
+# review is off. rounds: automatic fix rounds for blocking findings.
+review:
+  pool: [gpt, claude-opus]
+  rounds: 2
+
+# The command reviewers are told runs a repo's tests, per "owner/name" or absolute path.
+# repos:
+#   bketelsen/fleet: { test: "make test" }
+
+# The command judge. Rules (rules.yaml here, learned "always" answers in ~/.local/share/stomp/allowed.yaml) come first;
+# what they leave goes to Jev (TYPESAFE_API_KEY in the server's environment), else to the local model, else to you.
+# judge:
+#   local: 0.7         # run when P(local_only) + P(remote_read_only) reaches this
+#   reversible: 0.85   # else run when P(remote_reversible) reaches this; anything else asks you
+#   qwen: local        # the model alias for the local fallback; default: the first model of providers.local

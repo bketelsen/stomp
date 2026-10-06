@@ -1,0 +1,26 @@
+# stomp as a systemd user unit of the `stomp` account (linger on), installed by `deploy/vm.sh update --apply`
+# to ~/.config/systemd/user/stomp.service. The server binds 127.0.0.1:7310 (its default); deploy/vm.sh
+# tunnels the desktop's 127.0.0.1:7311 to it.
+[Unit]
+Description=stomp
+
+[Service]
+WorkingDirectory=%h/stomp
+# mise's Node 24 first, so the server and every agent shell get the same node; then mise's tools and Homebrew,
+# so agents can install what they need without sudo.
+Environment=PATH=%h/.local/share/mise/installs/node/24/bin:%h/.local/share/mise/shims:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOMEBREW_NO_AUTO_UPDATE=1
+Environment=STOMP_CONFIG=%h/.config/stomp
+Environment=STOMP_STATE=%h/.local/share/stomp
+# Secrets such as TYPESAFE_API_KEY, written by `deploy/vm.sh secret NAME`. Optional.
+EnvironmentFile=-%h/.local/share/stomp/env
+ExecStart=%h/.local/share/mise/installs/node/24/bin/node src/server/main.ts
+# Agents' bash children must die with the service: on their own they survive even a kill -9 of node.
+KillMode=control-group
+# SIGTERM makes the server close the harness gracefully.
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

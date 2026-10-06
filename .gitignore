@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.sqlite
+*.sqlite-*
+.env
+.envrc
+spike/*/data/
+spike/*/tmp/
+spike/*/out/
+.claude/launch.json
