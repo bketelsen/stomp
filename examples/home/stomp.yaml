@@ -37,3 +37,13 @@ review:
 #   local: 0.7         # run when P(local_only) + P(remote_read_only) reaches this
 #   reversible: 0.85   # else run when P(remote_reversible) reaches this; anything else asks you
 #   qwen: local        # the model alias for the local fallback; default: the first model of providers.local
+
+# MCP servers: each runs as a stdio process with the server's environment plus `env`, and an agent whose file says
+# `mcp: [truenas]` gets its tools. Calls are judged like commands: read-only tools run, destructive ones ask, the rest
+# go to the judge. Secrets stay out of this file: `deploy/vm.sh secret TRUENAS_API_KEY` puts the key in the server's
+# environment, which the MCP server inherits and agents' shells don't.
+# mcp:
+#   truenas:
+#     command: truenas-mcp
+#     args: [serve, --enable-writes]
+#     env: { TRUENAS_HOST: truenas.local }

@@ -71,12 +71,17 @@ reports through Picard. It's waiting for you in the morning.
   - Then your local model.
   - Then it asks you.
   - It never denies on its own. "Always allow" learns the exact command.
+- **MCP servers.** Name stdio MCP servers in `stomp.yaml` and list them in an agent's file to give it
+  their tools. The server gets your secrets; the agent's shell doesn't. MCP tools are judged like
+  shell commands: read-only tools run, destructive ones ask, the rest go to the judge.
 - **Asks you answer in one tap.** Inline cards, a "needs you" list, the tab title, and desktop
   browser notifications. Phone notifications wait on the installable app, which is a later item.
 - **Notebooks and consults.** Agents `remember` things across threads, and you can read and edit
   their notebooks. They can `consult` each other for read-only answers.
 - **Duties.** A check on a schedule wakes an agent only when the result changes, and the finding
-  comes back through the supervisor.
+  comes back through the supervisor. A duty with no check wakes the agent every time, for work only
+  its tools can do. Ask the supervisor for one and it adds it, after the judge clears the check like
+  any command. Those live in the state directory's `duties.yaml`; the ones in agent files stay yours.
 - **Your subscriptions, not API bills.** GitHub Copilot, ChatGPT (Codex) and Claude Pro/Max sign in
   with OAuth through [pi-ai](https://www.npmjs.com/package/@earendil-works/pi-ai), plus any
   OpenAI-compatible server (llama.cpp, vLLM, Lemonade, …). Agents name models by alias, so switching
@@ -158,7 +163,8 @@ npm start                                 # http://127.0.0.1:7310
 - model aliases;
 - local providers;
 - the review pool, for example `review: { pool: [gpt, claude-sonnet, gemini], rounds: 2 }`;
-- judge thresholds.
+- judge thresholds;
+- MCP servers, which an agent's file opts into with `mcp: [truenas]`.
 
 Your own judge rules go in `~/.config/stomp/rules.yaml`. See [examples/home](examples/home).
 

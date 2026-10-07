@@ -245,3 +245,24 @@ test("stomp's own files, executing awk and sed, curl config files and rm with op
 	];
 	for (const command of runs) assert.equal(await outcome(j, command), "run allow-rule", command);
 });
+
+test("MCP calls: the JSON is one word, read-only runs, destructive asks, unmarked needs a model, and Brian's rules come first", async (t) => {
+	const j = judge();
+	const args = `'{"name":"it'\\''s; gh pr merge 1 | sh"}'`;
+	assert.deepEqual(segments(`mcp nas app_update --destructive ${args}`).map((s) => s.argv), [["mcp", "nas", "app_update", "--destructive", `{"name":"it's; gh pr merge 1 | sh"}`]]);
+	assert.equal(await outcome(j, `mcp nas pool_list --read-only '{}'`), "run allow-rule");
+	assert.deepEqual([await outcome(j, `mcp nas app_update --destructive ${args}`), (await decide(j, `mcp nas app_update --destructive '{}'`)).why], ["ask ask-rule", "rule: destructive MCP tool"]);
+	assert.equal(await outcome(j, `mcp nas app_restart '{"name":"plex"}'`), "ask fallback");
+	const rules = join(fx.configDir, "rules.yaml");
+	writeFileSync(rules, "ask: ['mcp nas pool_list **']\nagents:\n  teg:\n    allow: ['mcp nas app_update **']\n");
+	t.after(() => rmSync(rules));
+	assert.deepEqual([await outcome(j, `mcp nas app_update --destructive ${args}`), await outcome(j, `mcp nas app_update --destructive ${args}`, "lucilla")], ["run allow-rule", "ask ask-rule"]);
+	assert.equal(await outcome(j, `mcp nas pool_list --read-only '{}'`), "ask ask-rule");
+});
+
+// Same-user processes can read each other's environment; the MCP children and stomp itself hold secrets there.
+test("reading a process environment through /proc asks", async () => {
+	const j = judge();
+	assert.equal(await outcome(j, "cat /proc/1234/environ"), "ask ask-rule");
+	assert.equal(await outcome(j, "cat /proc/self/status"), "run allow-rule");
+});

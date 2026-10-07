@@ -1,8 +1,8 @@
-// Asks: a command the judge didn't clear waits in memory for Brian. The guard is a beforeTool hook on bash and on file
-// tools that touch stomp's own files, installed in every extension that provides bash (stomp-coding, stomp-review): a hook
-// runs only where its extension is selected, so the tools and their guard travel together. It runs before pi-durable
-// commits the tool's intent, so after a restart it simply runs again and asks again under the same id, and an answer
-// given before a crash replays from the memo (spike q5).
+// Asks: a command the judge didn't clear waits in memory for Brian. The guard is a beforeTool hook on bash, on file tools
+// that touch stomp's own files and on MCP tools, installed in every extension that provides them (stomp-coding,
+// stomp-review, mcp-<name>): a hook runs only where its extension is selected, so the tools and their guard travel
+// together. It runs before pi-durable commits the tool's intent, so after a restart it simply runs again and asks again
+// under the same id, and an answer given before a crash replays from the memo (spike q5).
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -12,6 +12,7 @@ import { AgentDoc, type Harness, type HookApi, type HookRegistration, hook, Tool
 import { isSeq, parseDocument } from "yaml";
 import type { Ask, AskAnswer } from "../shared/protocol.ts";
 import type { Judge, Segment, Verdict } from "./judge.ts";
+import type { Judged } from "./mcp.ts";
 import { ThreadsDoc } from "./threads.ts";
 
 /** Hooks share the tool task's memo namespace, so the key is prefixed. */
@@ -88,20 +89,31 @@ async function placeOf(api: HookApi, harness: () => Harness, c: Context): Promis
 /** A file tool's `path` (`~` expanded, `@` dropped as pi-durable does) is in stomp's own files, resolved from the call's cwd. */
 async function ownFile(judge: Judge, api: HookApi, path: string, c: Context): Promise<boolean> {
 	const cwd = (await api.snapshot(AgentDoc, api.conversationId, c))?.cwd ?? "";
-	return judge.own(resolve(cwd, path.replace(/^@/, "").replace(/^~(?=\/|$)/, homedir())));
+	const full = resolve(cwd, path.replace(/^@/, "").replace(/^~(?=\/|$)/, homedir()));
+	// A process's environment holds the server's and MCP servers' secrets.
+	return /^\/proc\/[^/]+\/environ$/.test(full) || judge.own(full);
 }
 
-/** The guard: run what the judge clears; otherwise ask Brian and do what he says. Nothing automated says no. */
-export function stompGuard(judge: Judge, asks: Asks, harness: () => Harness): HookRegistration {
+const bash: Judged = (name, args) => (name === "bash" ? String(args.command ?? "") : undefined);
+/** Found by review: any tool's `path` used to count, so a stray one on another tool asked here and its answer skipped that tool's own guard. */
+const FILE_TOOLS = new Set(["read", "write", "edit", "read_file"]);
+
+/**
+ * The guard: run what the judge clears; otherwise ask Brian and do what he says. Nothing automated says no. It judges
+ * bash's commands and file tools' paths; an MCP extension's guard judges its own tools' calls instead (mcp.ts).
+ */
+export function stompGuard(judge: Judge, asks: Asks, harness: () => Harness, judged = bash): HookRegistration {
 	return hook(ToolTask, {
 		beforeTool: async (call, api, context) => {
 			// Every other tool runs unasked, and so do file tools (read, write, edit, read_file) outside stomp's own files.
-			const file = call.name === "bash" ? undefined : call.arguments.path;
-			if (typeof file === "string" ? !(await ownFile(judge, api, file, context)) : call.name !== "bash") return undefined;
+			const what = judged(call.name, call.arguments);
+			const shell = typeof what === "object" ? what.command : what;
+			const file = shell === undefined && judged === bash && FILE_TOOLS.has(call.name) ? call.arguments.path : undefined;
+			if (typeof file === "string" ? !(await ownFile(judge, api, file, context)) : shell === undefined) return undefined;
 			let answer = await api.memo<Answer>(MEMO, context);
 			if (answer === undefined) {
-				const command = typeof file === "string" ? `${call.name} ${file}` : String(call.arguments.command ?? "");
-				const place = await placeOf(api, harness, context);
+				const command = typeof file === "string" ? `${call.name} ${file}` : shell!;
+				const place = { ...(await placeOf(api, harness, context)), ...(typeof what === "object" && { cwd: what.cwd }) };
 				const asked = (by: "ask-rule" | "fallback", detail: string, why: string): Verdict => {
 					const line = { at: Date.now(), thread: place.thread, agent: place.agent, command, outcome: "ask", by, detail } as const;
 					judge.record(line);

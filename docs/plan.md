@@ -272,6 +272,14 @@ naive `tofu destroy` rule caught an `echo` into a runbook.
 4. **If Jev errors:** ask local Qwen the same question in single-token logprob mode (thinking off,
    about 0.7 s), with the same routing. If that fails too, ask me. It never denies.
 
+**MCP tools** go through the same guard, shipped in each `mcp-<server>` extension. A call is judged
+as the command `mcp <server> <tool> [--read-only|--destructive] '<args as JSON>'`, marked from the
+tool's annotations: `readOnlyHint` runs by a built-in allow rule, `destructiveHint` asks ("rule:
+destructive MCP tool"), and an unmarked tool goes to Jev, which sees the tool name and arguments. My
+rules come first, so `agents: { moneo: { allow: ["mcp truenas app_update **"] } }` lets one agent
+update apps without asking. Annotations are the server's word, like a make target's name: a server
+that marks a write read-only is believed.
+
 **Measured** on 176 labeled commands: 0 asks for a typical 40-command coding task, 2 for an ops task,
 and no false runs. A keyword fallback would have run `npm publish` and `make deploy`, so there isn't
 one.
@@ -470,6 +478,9 @@ by GPT, and Lucilla on GPT by Copilot Claude, whose two notes reached the report
     - It wakes the agent only when the output changed or the check failed.
     - The wake is a Delegation from the supervisor, so the finding comes back through Odrade's
       report. Without a supervisor it goes to the desk.
+    - Agents see their own duties, and Odrade sees everyone's. She adds, replaces and removes her
+      own with `duty`, in `$STOMP_STATE/duties.yaml`; the judge clears each check as she sets it.
+      A duty without a check wakes the agent every time.
   - **Unread markers and notifications** for threads with new activity, derived in the browser.
 - **Done when:** Miles Teg notices something in the homelab on his own and tells me.
 - **Later:**

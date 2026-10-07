@@ -21,6 +21,8 @@ export type StompConfig = {
 	repos: Record<string, { test?: string }>;
 	/** The judge's routing bars, and the model alias its local fallback uses instead of `providers.local`'s first. */
 	judge: { local: number; reversible: number; qwen?: string };
+	/** MCP servers by name: each a stdio process with the server's environment plus `env`. */
+	mcp: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>;
 };
 
 export const configDir = (): string => process.env.STOMP_CONFIG ?? join(homedir(), ".config", "stomp");
@@ -39,6 +41,7 @@ export function loadConfig(dir: string): StompConfig {
 		review?: { pool?: string[]; rounds?: number };
 		repos?: StompConfig["repos"];
 		judge?: Partial<StompConfig["judge"]>;
+		mcp?: StompConfig["mcp"];
 	} = {};
 	try {
 		raw = parse(readFileSync(join(dir, "stomp.yaml"), "utf8")) ?? {};
@@ -54,5 +57,6 @@ export function loadConfig(dir: string): StompConfig {
 		...(raw.review?.pool?.length ? { review: { pool: raw.review.pool, rounds: raw.review.rounds ?? 2 } } : {}),
 		repos: raw.repos ?? {},
 		judge: { local: raw.judge?.local ?? 0.7, reversible: raw.judge?.reversible ?? 0.85, ...(raw.judge?.qwen ? { qwen: raw.judge.qwen } : {}) },
+		mcp: raw.mcp ?? {},
 	};
 }
