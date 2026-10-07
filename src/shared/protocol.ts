@@ -38,6 +38,8 @@ export interface DutyInfo {
 	name: string;
 	/** As written in the agent file, e.g. "1h". */
 	every: string;
+	/** The supervisor added it, in duties.yaml. */
+	added?: true;
 	/** Epoch ms; absent until the first run. */
 	lastRun?: number;
 	/** The last check's exit code, and whether it woke the agent. */

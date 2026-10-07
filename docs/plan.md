@@ -478,6 +478,9 @@ by GPT, and Lucilla on GPT by Copilot Claude, whose two notes reached the report
     - It wakes the agent only when the output changed or the check failed.
     - The wake is a Delegation from the supervisor, so the finding comes back through Odrade's
       report. Without a supervisor it goes to the desk.
+    - Agents see their own duties, and Odrade sees everyone's. She adds, replaces and removes her
+      own with `duty`, in `$STOMP_STATE/duties.yaml`; the judge clears each check as she sets it.
+      A duty without a check wakes the agent every time.
   - **Unread markers and notifications** for threads with new activity, derived in the browser.
 - **Done when:** Miles Teg notices something in the homelab on his own and tells me.
 - **Later:**

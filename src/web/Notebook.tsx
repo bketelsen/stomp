@@ -1,4 +1,5 @@
-// An agent's page: its notebook, as markdown and editable, and its duties, read-only (they're in the agent file).
+// An agent's page: its notebook, as markdown and editable, and its duties, read-only (they're in the agent file, or the
+// supervisor's duties.yaml).
 import { useEffect, useState } from "react";
 import type { AgentInfo, DutyInfo } from "../shared/protocol.ts";
 import { Markdown } from "./markdown.tsx";
@@ -81,16 +82,21 @@ export function Notebook({ agent }: { agent: AgentInfo }) {
 	);
 }
 
-/** What a duty runs and how often; its last run, exit and wake (opening the thread it woke); and its next run. */
+/** What a duty runs and how often, and who added it; its last run, exit and wake (opening the thread it woke); and its next run. */
 function Duty({ agent, duty }: { agent: string; duty: DutyInfo }) {
 	const now = useNow();
+	const supervisor = useStore((s) => s.snapshot?.agents.find((a) => a.role === "supervisor")?.name ?? "the supervisor");
 	const woke = useStore((s) => s.snapshot?.threads.findLast((t) => t.agent === agent && t.title === `duty: ${duty.name}`));
 	const when = (ts: number, t = ago(ts, now)) => (t === "now" ? "just now" : /\d[mh]$/.test(t) ? `${t} ago` : `on ${t}`);
 	const next = ahead(duty.next, now);
 	return (
 		<div className="flex flex-col py-1 text-sm">
 			<span>
-				<span className="font-medium">{duty.name}</span> <span className="text-xs text-muted">every {duty.every}</span>
+				<span className="font-medium">{duty.name}</span>{" "}
+				<span className="text-xs text-muted">
+					every {duty.every}
+					{duty.added && `, added by ${supervisor}`}
+				</span>
 			</span>
 			<span className="flex flex-wrap gap-x-2 text-xs text-muted">
 				<span>{duty.lastRun === undefined ? "not run yet" : `ran ${when(duty.lastRun)}`}</span>

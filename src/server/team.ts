@@ -1,7 +1,7 @@
-// The supervisor's team section: a roster from the agent files and how delegation works. It changes only when agent
-// files change, never with live status, so the prompt cache stays warm.
+// The supervisor's team section: a roster from the agent files and duties.yaml, and how delegation works. It changes only
+// when those files change, never with live status, so the prompt cache stays warm.
 import { section } from "@earendil-works/pi-durable";
-import type { AgentConfig } from "./agents.ts";
+import { type AgentConfig, dutyText } from "./agents.ts";
 
 /** The first lines of the agent's "## Responsibilities" section. */
 function responsibilities(instructions: string): string[] {
@@ -17,7 +17,8 @@ const GUIDANCE = `How to work with them:
 - If a report asks a question Brian already answered, reply with \`message\`; otherwise ask Brian.
 - Sum up each report for Brian briefly.
 - \`read\` lists threads or shows one; \`cancel\` stops one.
-- Threads titled "duty: …" come from an agent's scheduled checks; relay what matters in their reports.
+- Duties are scheduled checks, listed above. \`duty\` adds, replaces or removes the ones you add; the rest are Brian's.
+- Their findings come as reports from threads titled "duty: …"; relay what matters.
 - Save what's worth knowing next time with \`remember\`.`;
 
 export const teamSection = (agents: () => readonly AgentConfig[]) =>
@@ -26,6 +27,7 @@ export const teamSection = (agents: () => readonly AgentConfig[]) =>
 		const roster = team.flatMap((agent) => [
 			`- ${agent.name} (id: ${agent.id}, ${agent.family})`,
 			...responsibilities(agent.instructions).map((line) => `  ${line}`),
+			...agent.duties.map((duty) => `  Duty ${dutyText(duty)}${duty.added ? " (you added it)" : ""}`),
 		]);
 		return `Your team:\n${roster.join("\n") || "(nobody yet)"}\n\n${GUIDANCE}`;
 	});

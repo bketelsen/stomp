@@ -1,7 +1,8 @@
-// Duties: scheduled checks in agent files. Level-triggered: at startup and every minute, each duty last run at least
-// `every` ago runs its check (Brian's config, so it isn't judged) in the agent's cwd, with the agent's shell environment,
-// and records the result in `stomp.duties`. When the result calls for it, the agent is woken: with a supervisor, by a
-// Delegation from the supervisor's desk in a new thread, so the finding comes back as a report; without one, in its desk.
+// Duties: scheduled checks in agent files and duties.yaml. Level-triggered: at startup and every minute, each duty last
+// run at least `every` ago runs its check (Brian's config, or judged when the supervisor set it) in the agent's cwd, with
+// the agent's shell environment, and records the result in `stomp.duties`. A duty without a check wakes every time.
+// When the result calls for it, the agent is woken: with a supervisor, by a Delegation from the supervisor's desk in a
+// new thread, so the finding comes back as a report; without one, in its desk.
 // A run's record and its Delegation land in one commit, and a desk wake is keyed by the run it follows, so a crash
 // between the check and the commit re-runs the check and never wakes twice.
 import { createHash } from "node:crypto";
@@ -39,12 +40,12 @@ export type DutyHost = {
 	now(): number;
 };
 
-/** AgentInfo's duties: the agent file's, with their last runs. */
+/** AgentInfo's duties: the agent file's and duties.yaml's, with their last runs. */
 export function dutyInfo(agent: AgentConfig, records: Readonly<Record<string, DutyRecord>>, now: number): DutyInfo[] {
-	return agent.duties.map(({ name, every, ms }) => {
+	return agent.duties.map(({ name, every, ms, added }) => {
 		const r = records[`${agent.id}/${name}`];
 		const woke = r?.lastWoke === undefined ? {} : { lastWoke: r.lastWoke };
-		return { name, every, ...(r && { lastRun: r.lastRun, lastExit: r.lastExit, ...woke }), next: (r?.lastRun ?? now) + ms };
+		return { name, every, ...(added && { added }), ...(r && { lastRun: r.lastRun, lastExit: r.lastExit, ...woke }), next: (r?.lastRun ?? now) + ms };
 	});
 }
 
@@ -70,7 +71,7 @@ export function startDuties(harness: Harness, host: DutyHost): () => Promise<voi
 		const desk = deskOf(agent.id);
 		// A new agent's desk comes with the reload that loaded it: until then, its duties wait.
 		if (desk === undefined) return;
-		const { exit, output } = await runCheck(host.env(agent.cwd), duty.check, c);
+		const { exit, output } = duty.check === undefined ? { exit: 0, output: "" } : await runCheck(host.env(agent.cwd), duty.check, c);
 		if (stop.signal.aborted) return;
 		const now = host.now();
 		const hash = createHash("sha256").update(`${exit}\n${output}`).digest("hex");
@@ -80,7 +81,8 @@ export function startDuties(harness: Harness, host: DutyHost): () => Promise<voi
 		const wake = duty.wake === "always" || (duty.wake === "failed" ? exit !== 0 : changed);
 		// Before and now, so the agent can see what changed.
 		const before = prev?.lastOutput === undefined ? "" : `\n\nThe last run (exit ${prev.lastExit}) printed:\n${prev.lastOutput || "(no output)"}`;
-		const brief = `[duty ${duty.name}] ${duty.brief}\n\nThe check ran \`${duty.check}\` (exit ${exit}):\n${output || "(no output)"}${before}`;
+		const ran = duty.check === undefined ? "" : `\n\nThe check ran \`${duty.check}\` (exit ${exit}):\n${output || "(no output)"}${before}`;
+		const brief = `[duty ${duty.name}] ${duty.brief}${ran}`;
 		if (wake && boss === undefined) {
 			// No supervisor: the agent's desk, keyed by the run this one follows, so a re-run after a crash dedupes.
 			const request = { type: "input", content: brief, whenBusy: "followUp", requestId: `duty:${key}:${prev?.lastRun ?? 0}` } as const;

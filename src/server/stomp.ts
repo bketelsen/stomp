@@ -21,7 +21,7 @@ import { familyOf } from "./family.ts";
 import { type Api, HttpError, httpHandler } from "./http.ts";
 import { drainInboxes } from "./inbox.ts";
 import { createJudge, JEV_URL } from "./judge.ts";
-import { stompMcp } from "./mcp.ts";
+import { type Judged, stompMcp } from "./mcp.ts";
 import { stopThread } from "./stop.ts";
 import { buildModels, resolveModel, SUBSCRIPTIONS } from "./models.ts";
 import { notebooks } from "./notebook.ts";
@@ -74,6 +74,7 @@ function localJudge(config: StompConfig, models: MutableModels): { baseUrl: stri
 export async function startStomp(options: StompOptions): Promise<Stomp> {
 	const config = loadConfig(options.configDir);
 	const scratch = join(options.stateDir, "scratch");
+	const dutiesFile = join(options.stateDir, "duties.yaml");
 	mkdirSync(scratch, { recursive: true, mode: 0o700 });
 	mkdirSync(join(options.configDir, "agents"), { recursive: true });
 	const credentials = new FileCredentialStore(join(options.stateDir, "credentials.json"));
@@ -85,6 +86,7 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 			families: config.families,
 			scratch,
 			notes: join(options.stateDir, "notes"),
+			duties: dutiesFile,
 			mcp: (name) => mcp.problem(name),
 		});
 	const pool = reviewPool(config.review?.pool ?? [], (spec) => resolveModel(models, config.models, spec), family);
@@ -100,7 +102,8 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 		...(qwen ? { qwen } : {}),
 	});
 	const asks = createAsks(judge, options.stateDir);
-	const guard = stompGuard(judge, asks, () => harness);
+	const guardFor = (judged?: Judged) => stompGuard(judge, asks, () => harness, judged);
+	const guard = guardFor();
 	const coding = stompCoding(config.bash.timeoutSeconds, workspaceTool(ws), guard);
 	// Late-bound to what's opened below; nothing runs a tool or a task before `harness.resume()`.
 	const review =
@@ -122,6 +125,8 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 		state: () => state.snapshot(),
 		workspaces: ws,
 		delegation,
+		guard: guardFor,
+		dutiesFile,
 	});
 	const notes = notebooks(() => agents, () => state.changed());
 	const consult = stompConsult({ agents: () => agents, guard });
@@ -137,7 +142,7 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 	const mcp = stompMcp(config.mcp, {
 		redact: (text) => secretValues.reduce((out, value) => out.replaceAll(value, "[redacted]"), text),
 		timeoutMs: config.bash.timeoutSeconds * 1000,
-		guard: (judged) => stompGuard(judge, asks, () => harness, judged),
+		guard: guardFor,
 		install: (extension) => registry.install(extension),
 	});
 	await mcp.start();
@@ -199,7 +204,7 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 		},
 	};
 
-	// Agent files and house.md: reload, then bring every thread in line. Serialized, so desks are created once.
+	// Agent files, house.md and duties.yaml: reload, then bring every thread in line. Serialized, so desks are created once.
 	let reloading = Promise.resolve();
 	let timer: NodeJS.Timeout | undefined;
 	const reload = () => {
@@ -219,6 +224,7 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 	const watchers = [
 		watch(options.configDir, (_event, file) => file === "house.md" && changed()),
 		watch(join(options.configDir, "agents"), (_event, file) => (file === null || file.endsWith(".md")) && changed()),
+		watch(options.stateDir, (_event, file) => file === "duties.yaml" && changed()),
 	];
 
 	const server = createServer(httpHandler(api, options.webDir ?? WEB_DIR));
