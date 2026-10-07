@@ -41,7 +41,12 @@ export function stompMcp(config: StompConfig["mcp"], host: McpHost) {
 
 	/** One extension per tool list: its guard knows exactly its tools, so a phase's tools and guard agree. */
 	function extensionOf(server: string, listed: Tool[]): Extension {
-		const named = new Map(listed.map((t) => [t.name.startsWith(`${server}_`) ? t.name : `${server}_${t.name}`, t]));
+		const named = new Map<string, Tool>();
+		for (const t of listed) {
+			let name = t.name.startsWith(`${server}_`) ? t.name : `${server}_${t.name}`;
+			while (named.has(name)) name += "_"; // a server listing both x and <server>_x keeps both
+			named.set(name, t);
+		}
 		const judged: Judged = (name, args) => {
 			const t = named.get(name);
 			return t && `mcp ${server} ${t.name}${marker(t)} ${quote(JSON.stringify(args))}`;
