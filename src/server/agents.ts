@@ -7,17 +7,19 @@ import type { ModelRef } from "@earendil-works/pi-durable";
 import { parse } from "yaml";
 import { expandHome } from "./config.ts";
 import { familyOf } from "./family.ts";
+import { linksOf } from "./models.ts";
 
 export type AgentConfig = {
 	id: string;
 	name: string;
 	/** The frontmatter's `title`: a few words on what the agent is for, shown beside its name. */
 	title?: string;
-	/** As written in the file: an alias or `provider/modelId`. */
+	/** As written in the file: an alias or `provider/modelId`, or a list of them, tried in order, joined by ", ". */
 	model: string;
 	provider: string;
 	modelId: string;
-	family: string;
+	/** One per family in the model's list, in order. */
+	families: string[];
 	role: "agent" | "supervisor";
 	thinking: ModelThinkingLevel;
 	cwd: string;
@@ -38,7 +40,7 @@ export type AgentConfig = {
 export type Duty = { name: string; every: string; ms: number; check?: string; wake: "changed" | "failed" | "always"; brief: string; added?: true };
 
 export type AgentContext = {
-	resolveModel(spec: string): ModelRef | string;
+	resolveModel(spec: string | string[]): ModelRef | string;
 	families: readonly [RegExp, string][];
 	/** Default cwd parent: `$STOMP_STATE/scratch`. */
 	scratch: string;
@@ -101,7 +103,7 @@ export function parseAgent(id: string, text: string, house: string, context: Age
 		model: "",
 		provider: "",
 		modelId: "",
-		family: "unknown",
+		families: [],
 		role: "agent",
 		thinking: "medium",
 		cwd: join(context.scratch, id),
@@ -117,7 +119,8 @@ export function parseAgent(id: string, text: string, house: string, context: Age
 		const body = match[2]!.trim();
 		agent.name = /^#[ \t]+(.+)$/m.exec(body)?.[1]!.trim() ?? id;
 		agent.instructions = house ? `${house}\n\n${body}` : body;
-		agent.model = typeof meta.model === "string" ? meta.model : "";
+		const spec = Array.isArray(meta.model) ? meta.model.map(String) : typeof meta.model === "string" ? meta.model : "";
+		agent.model = typeof spec === "string" ? spec : spec.join(", ");
 		if (typeof meta.title === "string" && meta.title.trim()) agent.title = meta.title.trim();
 		if (meta.role !== undefined && meta.role !== "agent" && meta.role !== "supervisor") {
 			throw new Error(`role must be agent or supervisor, not "${meta.role}"`);
@@ -140,13 +143,15 @@ export function parseAgent(id: string, text: string, house: string, context: Age
 		const problem = agent.mcp.map((name) => context.mcp(name)).find(Boolean);
 		if (problem) throw new Error(problem);
 		if (!agent.model) throw new Error("model is required");
-		const ref = context.resolveModel(agent.model);
+		const ref = context.resolveModel(spec);
 		if (typeof ref === "string") throw new Error(ref);
 		agent.provider = ref.provider;
 		agent.modelId = ref.modelId;
-		const family = familyOf(ref.modelId, context.families);
-		if (family === undefined) throw new Error(`unknown family for model "${ref.modelId}"; add it to families in stomp.yaml`);
-		agent.family = family;
+		for (const { modelId } of linksOf(ref)) {
+			const family = familyOf(modelId, context.families);
+			if (family === undefined) throw new Error(`unknown family for model "${modelId}"; add it to families in stomp.yaml`);
+			if (!agent.families.includes(family)) agent.families.push(family);
+		}
 		mkdirSync(agent.cwd, { recursive: true });
 	} catch (error) {
 		agent.error = (error as Error).message;

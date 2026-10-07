@@ -21,7 +21,7 @@ export interface AgentInfo {
 	/** What the alias resolved to. */
 	provider: string;
 	modelId: string;
-	/** From the model id: anthropic, openai, google, qwen, xai, ... */
+	/** From the model id: anthropic, openai, google, qwen, xai, ... A fallback model lists each, e.g. "qwen, anthropic". */
 	family: string;
 	/** Exactly one agent may have role "supervisor". */
 	role: "agent" | "supervisor";

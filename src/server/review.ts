@@ -26,6 +26,7 @@ import { REVIEW_ENTRY } from "../shared/protocol.ts";
 import type { AgentConfig } from "./agents.ts";
 import { bashWithTimeout } from "./coding.ts";
 import type { StompConfig } from "./config.ts";
+import { linksOf } from "./models.ts";
 import { readFileTool } from "./readonly.ts";
 import { type Binding, type ThreadRecord, ThreadsDoc } from "./threads.ts";
 import { git } from "./workspace.ts";
@@ -104,8 +105,8 @@ export function reviewPool(
 /** Startup check: every agent has a reviewer from another family. */
 export function checkPool(pool: readonly PoolModel[], agents: readonly AgentConfig[]): void {
 	for (const agent of agents) {
-		if (agent.role !== "agent" || agent.error !== undefined || pool.some((m) => m.family !== agent.family)) continue;
-		throw new Error(`review.pool in stomp.yaml has no model outside the ${agent.family} family to review ${agent.id}`);
+		if (agent.role !== "agent" || agent.error !== undefined || pool.some((m) => !agent.families.includes(m.family))) continue;
+		throw new Error(`review.pool in stomp.yaml has no model outside the ${agent.families.join(" and ")} family to review ${agent.id}`);
 	}
 }
 
@@ -189,9 +190,11 @@ export function stompReview(options: ReviewOptions) {
 				const row = await boundRow(rt, thread, c);
 				let cp = task.state.checkpoint;
 				if (cp.reviewer === undefined) {
-					const author = options.familyOf((await rt.agent(c)).model?.modelId ?? "");
-					const pick = options.pool.find((m) => m.family !== author);
-					if (pick === undefined) throw new Error(`review.pool has no model outside the ${author} family`);
+					// Any link of a fallback model may have written the commits.
+					const model = (await rt.agent(c)).model;
+					const authors = model ? linksOf(model).map((link) => options.familyOf(link.modelId)) : [];
+					const pick = options.pool.find((m) => !authors.includes(m.family));
+					if (pick === undefined) throw new Error(`review.pool has no model outside the ${authors.join(" and ")} family`);
 					const seed = cp;
 					await rt.commit(async (tx) => {
 						const { id } = await tx.createConversation({ ownership: { kind: "task", taskId: rt.taskId } });

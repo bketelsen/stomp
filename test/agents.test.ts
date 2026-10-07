@@ -3,12 +3,14 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { type AgentContext, loadAgents, parseAgent } from "../src/server/agents.ts";
+import { FALLBACK } from "../src/server/models.ts";
 import { agentFile, fixture } from "./support/fixture.ts";
 
 const fx = fixture();
 after(fx.cleanup);
 const context: AgentContext = {
 	resolveModel: (spec) => {
+		if (Array.isArray(spec)) return { provider: FALLBACK, modelId: spec.map((s) => (s === "claude" ? "anthropic/claude-sonnet-5-5" : s)).join(" | ") };
 		if (spec === "claude") return { provider: "anthropic", modelId: "claude-sonnet-5-5" };
 		return spec.includes("/") ? { provider: "x", modelId: spec.split("/")[1]! } : `unknown model alias "${spec}"`;
 	},
@@ -24,8 +26,8 @@ test("an agent file: frontmatter, name from the H1, house rules first, defaults"
 	const agent = parseAgent("teg", text, "House.", context);
 	assert.equal(agent.error, undefined);
 	assert.deepEqual(
-		{ name: agent.name, provider: agent.provider, modelId: agent.modelId, family: agent.family, role: agent.role, thinking: agent.thinking },
-		{ name: "Miles Teg", provider: "anthropic", modelId: "claude-sonnet-5-5", family: "anthropic", role: "agent", thinking: "medium" },
+		{ name: agent.name, provider: agent.provider, modelId: agent.modelId, families: agent.families, role: agent.role, thinking: agent.thinking },
+		{ name: "Miles Teg", provider: "anthropic", modelId: "claude-sonnet-5-5", families: ["anthropic"], role: "agent", thinking: "medium" },
 	);
 	assert.equal(agent.instructions, "House.\n\nintro\n# Miles Teg\n\nBashar.");
 	assert.equal(agent.cwd, join(fx.root, "scratch", "teg"));
@@ -61,7 +63,17 @@ test("bad files get an error instead of throwing", () => {
 	const added = (list: unknown) => parseAgent("x", agentFile("X", "claude", "duties:\n  - { name: d, every: 1h, check: c, brief: b }\n"), "", context, list).error;
 	assert.equal(added([{ name: "d", every: "2h", brief: "b" }]), "two duties are named d");
 	assert.equal(added([{ name: "e", every: "1m", brief: "b" }]), "duties.yaml: duty e: every must be like 15m, 6h or 1d, and at least 5m");
-	assert.equal(parseAgent("x", agentFile("X", "x/acme-code-1"), "", { ...context, families: [[/^acme/, "acme"]] }).family, "acme");
+	assert.deepEqual(parseAgent("x", agentFile("X", "x/acme-code-1"), "", { ...context, families: [[/^acme/, "acme"]] }).families, ["acme"]);
+	assert.match(error(agentFile("X", "[claude, x/acme-code-1]"))!, /unknown family for model "acme-code-1"/);
+});
+
+test("a list of models is one fallback model with every link's family", () => {
+	const agent = parseAgent("x", agentFile("X", "[claude, x/qwen3, x/claude-opus-5]"), "", context);
+	assert.equal(agent.error, undefined);
+	assert.deepEqual(
+		[agent.model, agent.provider, agent.modelId, agent.families],
+		["claude, x/qwen3, x/claude-opus-5", FALLBACK, "anthropic/claude-sonnet-5-5 | x/qwen3 | x/claude-opus-5", ["anthropic", "qwen"]],
+	);
 });
 
 test("loading: only the first supervisor keeps the role, and duties.yaml adds duties unless it's malformed", (t) => {

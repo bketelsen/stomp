@@ -8,7 +8,8 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { JsonObject } from "@earendil-works/pi-ai";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { REPORT_PREFIX, REVIEW_ENTRY } from "../src/shared/protocol.ts";
-import { REVIEW } from "../src/server/review.ts";
+import type { AgentConfig } from "../src/server/agents.ts";
+import { checkPool, REVIEW } from "../src/server/review.ts";
 import { startStomp } from "../src/server/stomp.ts";
 import { agentFile, fixture, until } from "./support/fixture.ts";
 import { type Request, scriptedModels, type Turn } from "./support/scripted.ts";
@@ -239,6 +240,11 @@ test("a reviewer's command asks on the thread it reviews, and Brian's answer rea
 
 test("a pool without a second family for some agent is a startup error naming it", async (t) => {
 	await assert.rejects(startReviewed(t, "[scripted/claude-r]"), /no model outside the anthropic family to review alpha/);
+	// A fallback model's commits may come from any of its links.
+	const alpha = { id: "alpha", role: "agent", families: ["qwen", "anthropic"] } as AgentConfig;
+	const pool = (...families: string[]) => families.map((family) => ({ ref: { provider: "p", modelId: family }, family }));
+	assert.throws(() => checkPool(pool("anthropic", "qwen"), [alpha]), /no model outside the qwen and anthropic family to review alpha/);
+	checkPool(pool("anthropic", "openai"), [alpha]);
 });
 
 // Found by the phase 3 cross-family review: a stopped thread must not be woken by its review's fix round.
