@@ -148,8 +148,7 @@ picks a reviewer outside every family in the list.
 git clone https://github.com/bketelsen/stomp && cd stomp
 cp -r examples/home ~/.config/stomp       # edit stomp.yaml and agents/ to taste
 deploy/vm.sh create                       # Debian 13 VM with Node, mise and Homebrew
-deploy/vm.sh config                       # copy ~/.config/stomp in (no secrets live there)
-deploy/vm.sh update --apply               # push this checkout, build, start the service
+deploy/vm.sh update --apply               # push this checkout and ~/.config/stomp, build, start
 deploy/vm.sh login github-copilot         # or openai, anthropic; run in the VM, finished in your browser
 deploy/vm.sh secret TYPESAFE_API_KEY      # optional: the judge's key, read silently
 ```

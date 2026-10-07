@@ -9,9 +9,9 @@ A systemd socket on the desktop (`stomp-dev-web.socket`) tunnels each connection
 
 ```sh
 deploy/vm.sh create              # make and provision the VM; safe to re-run
-deploy/vm.sh config              # copy ~/.config/stomp in (no secrets live there)
 deploy/vm.sh update              # see what an update would do
-deploy/vm.sh update --apply      # push this working tree, build, restart
+deploy/vm.sh update --apply      # push this working tree and ~/.config/stomp, build, restart
+deploy/vm.sh config              # just ~/.config/stomp (no secrets live there), restart
 deploy/vm.sh login <provider>    # github-copilot | openai | anthropic
 deploy/vm.sh open                # open stomp in your browser, with its token
 deploy/vm.sh status | logs | shell
