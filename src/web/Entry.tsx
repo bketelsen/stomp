@@ -42,6 +42,24 @@ export function Time({ ts }: { ts: number | undefined }) {
 	);
 }
 
+/** Copies the markdown as written, and says so for a moment. */
+function Copy({ text }: { text: string }) {
+	const [said, setSaid] = useState<string>();
+	const copy = async () => {
+		const ok = await navigator.clipboard?.writeText(text).then(
+			() => true,
+			() => false,
+		);
+		setSaid(ok ? "copied" : "can't copy here");
+		setTimeout(() => setSaid(undefined), 1500);
+	};
+	return (
+		<button type="button" onClick={() => void copy()} className="shrink-0 text-xs text-muted hover:text-fg max-md:min-h-8">
+			{said ?? "copy"}
+		</button>
+	);
+}
+
 function Divider({ label, children }: { label: string; children?: React.ReactNode }) {
 	return (
 		<details className="text-xs text-muted">
@@ -94,7 +112,7 @@ export const Entry = memo(function Entry({ entry, calls }: { entry: EntryRecord;
 export function Assistant({ message: m, calls, streaming }: { message: AssistantMessage; calls: Calls; streaming?: boolean }) {
 	const interrupted = m.stopReason === "aborted";
 	const failed = m.stopReason === "error";
-	const said = m.content.some((block) => block.type === "text" && block.text.trim());
+	const text = m.content.flatMap((block) => (block.type === "text" && block.text.trim() ? [block.text.trim()] : [])).join("\n\n");
 	return (
 		<div className={`flex flex-col gap-2 ${interrupted ? "opacity-60" : ""}`}>
 			{m.content.map((block, i) => {
@@ -105,11 +123,12 @@ export function Assistant({ message: m, calls, streaming }: { message: Assistant
 				const Card = result?.isError ? ToolCard : (CARDS[block.name] ?? ToolCard);
 				return <Card key={i} name={block.name} args={block.arguments} slot={slot} result={result} preparing={streaming} />;
 			})}
-			{!streaming && (said || interrupted || failed) && (
+			{!streaming && (text || interrupted || failed) && (
 				<div className="flex items-center gap-2 text-xs">
 					{interrupted && <span className="text-warn">interrupted (not seen by the model)</span>}
 					{failed && <span className="text-err">error: {m.errorMessage ?? "unknown"}</span>}
 					<Time ts={m.timestamp} />
+					{text && <Copy text={text} />}
 				</div>
 			)}
 		</div>
@@ -306,6 +325,7 @@ function Delivered({ ts, body, foot, children }: { ts?: number; body: string; fo
 			<div className="flex items-baseline gap-2 text-xs text-muted">
 				{children}
 				<Time ts={ts} />
+				<Copy text={body} />
 			</div>
 			<Markdown text={body} />
 			{foot && <div className="text-xs text-muted">{foot}</div>}

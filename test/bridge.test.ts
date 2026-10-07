@@ -9,7 +9,7 @@ import { scriptedModels } from "./support/scripted.ts";
 
 test("bridge: state, base then ops, REST commands and entries paging", async (t) => {
 	const fx = fixture();
-	fx.agent("alpha", agentFile("Alpha"));
+	fx.agent("alpha", agentFile("Alpha", "scripted/scripted-1", "title: ' Errands '\n"));
 	fx.agent("broken", agentFile("Broken", "nope"));
 	const models = scriptedModels((r) => ({ text: `echo: ${r.lastUserText}`, delayMs: 200 }));
 	const stomp = await startStomp({ configDir: fx.configDir, stateDir: fx.stateDir, listen: "127.0.0.1:0", models });
@@ -28,6 +28,7 @@ test("bridge: state, base then ops, REST commands and entries paging", async (t)
 	const first = await until(() => received.find((m) => m.type === "state"));
 	const desk = first.state.agents.find((a) => a.id === "alpha")!.deskThread;
 	assert.match(first.state.agents.find((a) => a.id === "broken")!.error!, /unknown model alias/);
+	assert.equal(first.state.agents.find((a) => a.id === "alpha")!.title, "Errands");
 
 	ws.send(JSON.stringify({ type: "subscribe", thread: desk }));
 	const base = await until(() => received.find((m) => m.type === "base"));
@@ -54,6 +55,15 @@ test("bridge: state, base then ops, REST commands and entries paging", async (t)
 	assert.equal(typeof side.body.thread, "number");
 	assert.deepEqual((await stomp.state()).threads.map((thread) => [thread.title, thread.desk]), [["Alpha", true], ["Side quest", false]]);
 	assert.equal((await call("POST", "/api/agents/broken/threads", {})).status, 409);
+	// Archiving is a flag on the thread: it survives in the state, comes off again, and a desk can't have it.
+	const archived = async () => (await stomp.state()).threads.find((thread) => thread.id === side.body.thread)!.archived;
+	assert.deepEqual(await call("POST", `/api/threads/${side.body.thread}/archive`, { archived: true }), { status: 200, body: {} });
+	assert.equal(await archived(), true);
+	await call("POST", `/api/threads/${side.body.thread}/archive`, { archived: false });
+	assert.equal(await archived(), undefined);
+	assert.deepEqual(await call("POST", `/api/threads/${desk}/archive`, { archived: true }), { status: 409, body: { error: "a desk can't be archived" } });
+	assert.equal((await call("POST", "/api/threads/999/archive", { archived: true })).status, 404);
+	assert.equal((await call("POST", `/api/threads/${side.body.thread}/archive`, { archived: "yes" })).status, 400);
 	assert.equal((await call("POST", `/api/threads/${desk}/messages`, { text: " " })).status, 400);
 	assert.equal((await call("GET", "/api/threads/999/entries")).status, 404);
 	assert.deepEqual(await call("POST", `/api/threads/${desk}/abort`), { status: 200, body: {} });

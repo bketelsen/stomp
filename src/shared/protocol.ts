@@ -14,6 +14,8 @@ export interface AgentInfo {
 	id: string;
 	/** The file's H1. */
 	name: string;
+	/** The file's `title`: a few words on what the agent is for, e.g. "NAS". */
+	title?: string;
 	/** The model alias as written in the file, e.g. "claude-sonnet". */
 	model: string;
 	/** What the alias resolved to. */
@@ -68,6 +70,8 @@ export interface ThreadInfo {
 	branch?: string;
 	/** The latest finished cross-family review of this thread's commits. */
 	review?: ReviewRecord;
+	/** Brian archived it. Desks can't be. */
+	archived?: true;
 }
 
 export interface ReviewFinding {
@@ -175,6 +179,7 @@ export interface JudgeDecision {
 //   POST /api/agents/:agent/threads   {title?}       -> {thread: number}
 //   POST /api/threads/:thread/messages {text, mode}  -> {submission: string}
 //   POST /api/threads/:thread/abort                  -> {}
+//   POST /api/threads/:thread/archive {archived}     -> {}   409 for a desk
 //   GET  /api/threads/:thread/entries?before=<entryId>&limit=<n>  -> {entries: EntryPage}
 export type SendMode = "followUp" | "steer";
 

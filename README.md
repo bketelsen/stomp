@@ -62,6 +62,7 @@ reports through Picard. It's waiting for you in the morning.
   gets each report exactly once, even across restarts, and can steer or cancel any thread. The org
   chart is two levels deep, on purpose.
 - **Direct chat.** Any agent, any thread, with streaming, steer (redirect a run mid-flight) and abort.
+  Copy any answer, archive threads you're done with, and fold agents you're not using.
 - **Cross-family review.** Every agent commit in a worktree is reviewed by the first model in your
   pool whose family differs from the author's. The verdict is computed from the findings, not taken
   from the model, so nits can't turn into fix rounds.
@@ -105,6 +106,7 @@ An agent file:
 ```markdown
 ---
 model: claude-sonnet          # an alias from stomp.yaml
+title: Homelab                # a few words beside the name in the rail
 duties:
   - name: hosts
     every: 15m

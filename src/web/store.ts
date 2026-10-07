@@ -30,6 +30,8 @@ export type Store = {
 	error?: string;
 	/** Threads that finished work since Brian last opened them. */
 	unread: readonly number[];
+	/** Agents Brian folded in the rail; this browser's preference. */
+	collapsed: readonly string[];
 };
 
 const PAGE = 50;
@@ -51,8 +53,13 @@ const keep = (next: Seen) => {
 	} catch {}
 };
 const busy = (t: ThreadInfo) => t.status !== "idle" || t.delegation === "running";
+const COLLAPSED = "stomp.collapsed";
+let collapsed: string[] = [];
+try {
+	collapsed = JSON.parse(localStorage.getItem(COLLAPSED) ?? "[]") ?? [];
+} catch {}
 
-let state: Store = { connected: false, older: [], olderDone: false, unread: seen?.unread ?? [] };
+let state: Store = { connected: false, older: [], olderDone: false, unread: seen?.unread ?? [], collapsed };
 const listeners = new Set<() => void>();
 
 function set(patch: Partial<Store>) {
@@ -156,13 +163,27 @@ function setView(view: ConversationView) {
 	set(moved ? { view, older: [], olderFrom: undefined, olderDone: false } : { view });
 }
 
+/** The unread list without `thread`, saved. */
+function read(thread: number | undefined): readonly number[] {
+	const unread = state.unread.filter((id) => id !== thread);
+	if (seen && unread.length !== state.unread.length) keep({ ...seen, unread });
+	return unread;
+}
+
 export function select(thread: number | undefined) {
 	if (thread === state.thread) return;
 	if (state.thread !== undefined) send({ type: "unsubscribe", thread: state.thread });
-	const unread = state.unread.filter((id) => id !== thread);
-	if (seen && unread.length !== state.unread.length) keep({ ...seen, unread });
-	set({ thread, view: undefined, older: [], olderFrom: undefined, olderDone: false, error: undefined, unread });
+	set({ thread, view: undefined, older: [], olderFrom: undefined, olderDone: false, error: undefined, unread: read(thread) });
 	if (thread !== undefined) send({ type: "subscribe", thread });
+}
+
+/** Fold or unfold an agent in the rail. */
+export function toggleAgent(agent: string) {
+	const next = state.collapsed.includes(agent) ? state.collapsed.filter((id) => id !== agent) : [...state.collapsed, agent];
+	try {
+		localStorage.setItem(COLLAPSED, JSON.stringify(next));
+	} catch {}
+	set({ collapsed: next });
 }
 
 export const clearError = () => set({ error: undefined });
@@ -191,6 +212,12 @@ export const sendMessage = async (thread: number, text: string, mode: SendMode) 
 	(await attempt(api("POST", `/threads/${thread}/messages`, { text, mode }))) !== undefined;
 
 export const abort = (thread: number) => attempt(api("POST", `/threads/${thread}/abort`, {}));
+
+/** Put a thread away, which also marks it read, or bring it back. */
+export async function archive(thread: number, archived: boolean) {
+	if (archived) set({ unread: read(thread) });
+	await attempt(api("POST", `/threads/${thread}/archive`, { archived }));
+}
 
 export async function newThread(agent: string) {
 	const created = await attempt(api<{ thread: number }>("POST", `/agents/${encodeURIComponent(agent)}/threads`, {}));
