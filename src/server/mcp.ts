@@ -13,8 +13,8 @@ import type { ContentBlock, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { Type } from "typebox";
 import type { StompConfig } from "./config.ts";
 
-/** A guard's command for a call, or undefined for a call it doesn't judge. */
-export type Judged = (name: string, args: Record<string, unknown>) => string | undefined;
+/** A guard's command for a call, with where it runs when that isn't the caller's cwd; undefined for a call it doesn't judge. */
+export type Judged = (name: string, args: Record<string, unknown>) => string | { command: string; cwd: string } | undefined;
 type Server = { client?: Client; starting?: Promise<Client>; error?: string; extension: Extension; tools?: Map<string, Tool> };
 
 const CAP = 50_000;

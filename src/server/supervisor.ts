@@ -197,9 +197,12 @@ export function stompSupervisor(host: SupervisorHost): Extension {
 			return reply(`${at >= 0 ? "Replaced" : "Added"} ${agent.name}'s duty: ${parsed}`);
 		},
 	});
-	// Brian's checks run unjudged, so one set here is judged as it's set: it runs every time after.
-	const dutyCheck: Judged = (toolName, args) =>
-		toolName === "duty" && !args.remove && typeof args.check === "string" ? args.check.trim() || undefined : undefined;
+	// Brian's checks run unjudged, so one set here is judged as it's set, where it will run: it runs every time after.
+	const dutyCheck: Judged = (toolName, args) => {
+		const command = toolName === "duty" && !args.remove && typeof args.check === "string" ? args.check.trim() : "";
+		const cwd = agentOf(String(args.agent))?.cwd;
+		return command ? (cwd ? { command, cwd } : command) : undefined;
+	};
 
 	return defineExtension({
 		name: "stomp-supervisor",

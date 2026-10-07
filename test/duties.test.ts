@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
@@ -43,6 +44,7 @@ async function startDuty(t: TestContext, duty: string, boss = true) {
 	const d = {
 		start: now,
 		fx,
+		cwd,
 		systems,
 		say: async (thread: number, text: string) =>
 			(await (await stomp.harness.conversation(thread as ConversationId, ctx))!.submit({ type: "input", content: text }, ctx)).wait(ctx),
@@ -156,14 +158,18 @@ test("the supervisor sees every duty and adds, replaces and removes her own; a c
 	await until(async () => (await d.reports()).length > 0);
 	assert.match(d.systems.w0!, /Duty nightly, every 1d: wakes every time\. Brief: Check the backups\. \(you added it\)/);
 
-	// No rule or model clears this check, so Brian is asked; he declines and nothing is written.
-	const asking = call("duty", { agent: "alpha", name: "nightly", every: "1d", check: "nc -z nas 22", brief: "Is it up?" });
+	// Found by review: a check is judged where it will run, Alpha's checkout on main here, and a stray path doesn't turn
+	// the ask into a file ask whose answer skips judging the check. Brian declines, and nothing is written.
+	execFileSync("git", ["-C", d.cwd, "-c", "user.name=t", "-c", "user.email=t@t", "init", "-q", "-b", "main"]);
+	execFileSync("git", ["-C", d.cwd, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]);
+	const push = { agent: "alpha", name: "nightly", every: "1d", check: "git push origin HEAD", brief: "Ship.", path: "/proc/self/environ" };
+	const asking = call("duty", push);
 	const ask = await d.ask();
-	assert.deepEqual([ask.command, ask.agent], ["nc -z nas 22", "boss"]);
+	assert.deepEqual([ask.command, ask.why, ask.agent, ask.cwd], ["git push origin HEAD", "rule: push from main", "boss", d.cwd]);
 	assert.equal(await d.answer(ask.id, { decision: "deny" }), 200);
 	await asking;
 	assert.match(await result(), /Brian declined/);
-	assert.doesNotMatch(yaml(), /nc -z/);
+	assert.doesNotMatch(yaml(), /git push/);
 	// The built-in rules clear this one.
 	await call("duty", { agent: "alpha", name: "nightly", every: "1d", check: "cat backups.log", wake: "failed", brief: "Fix it." });
 	assert.match(await result(), /^Replaced Alpha's duty: nightly, every 1d: runs `cat backups\.log`, wakes when it fails\. Brief: Fix it\./);
