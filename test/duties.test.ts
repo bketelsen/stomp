@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -14,14 +15,19 @@ import { scriptedModels } from "./support/scripted.ts";
 const MINUTE = 60_000;
 const textOf = (m: Message) => (typeof m.content === "string" ? m.content : m.content.map((c) => ("text" in c ? c.text : "")).join(""));
 
-/** Alpha, working in a temp dir, with one duty; a supervisor unless `boss` is false. The duty clock moves only when told. */
+/** Alpha, working in a temp dir, with one duty; a supervisor unless `boss` is false. The duty clock moves only when told. Told "call: <tool> <json>", the supervisor calls it. */
 async function startDuty(t: TestContext, duty: string, boss = true) {
 	const fx = fixture();
 	const cwd = join(fx.root, "alpha");
 	mkdirSync(cwd);
 	if (boss) fx.agent("boss", agentFile("Boss", "scripted/w0", "role: supervisor\n"));
 	fx.agent("alpha", agentFile("Alpha", "scripted/w1", `cwd: ${cwd}\nduties:\n  - ${duty}\n`));
-	const models = scriptedModels((r) => ({ text: r.model === "w0" ? "ack" : `w1 did ${r.lastUserText}` }), ["w0", "w1"]);
+	const systems: Record<string, string> = {};
+	const models = scriptedModels((r) => {
+		systems[r.model] = r.system;
+		const call = r.model === "w0" && r.lastTool === undefined && /^call: (\w+) (.*)/.exec(r.lastUserText);
+		return call ? { calls: [[call[1]!, JSON.parse(call[2]!)]] } : { text: r.model === "w0" ? "ack" : `w1 did ${r.lastUserText}` };
+	}, ["w0", "w1"]);
 	let now = Date.UTC(2026, 9, 6, 12);
 	const open = () =>
 		startStomp({ configDir: fx.configDir, stateDir: fx.stateDir, listen: "127.0.0.1:0", models, dutyClock: { tickMs: 20, now: () => now } });
@@ -37,6 +43,14 @@ async function startDuty(t: TestContext, duty: string, boss = true) {
 			.flatMap((m) => (m.role === role ? [textOf(m)] : []));
 	const d = {
 		start: now,
+		fx,
+		cwd,
+		systems,
+		say: async (thread: number, text: string) =>
+			(await (await stomp.harness.conversation(thread as ConversationId, ctx))!.submit({ type: "input", content: text }, ctx)).wait(ctx),
+		ask: () => until(async () => (await stomp.state()).asks[0]),
+		answer: async (id: string, body: unknown) => (await fetch(`${stomp.url}/api/asks/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(body) })).status,
+		duties: async () => (await stomp.state()).agents.find((a) => a.id === "alpha")!.duties,
 		write: (file: string, text: string) => writeFileSync(join(cwd, file), text),
 		duty: async () => (await stomp.state()).agents.find((a) => a.id === "alpha")!.duties[0]!,
 		desk: async (agent: string) => (await stomp.state()).agents.find((a) => a.id === agent)!.deskThread,
@@ -121,4 +135,56 @@ test("a changed duty that already fails on its first run wakes once, then only o
 	await until(() => d.woken().then((w) => w.length === 1));
 	await d.advance(5 * MINUTE);
 	assert.equal((await d.woken()).length, 1, "the same failure again doesn't wake");
+});
+
+test("the supervisor sees every duty and adds, replaces and removes her own; a check she sets is judged as she sets it", async (t) => {
+	const d = await startDuty(t, "{ name: disk, every: 5m, check: cat df.txt, brief: Free some space. }");
+	const boss = await d.desk("boss");
+	const call = (tool: string, args: object) => d.say(boss, `call: ${tool} ${JSON.stringify(args)}`);
+	const result = async () => (await d.texts(boss, "toolResult")).at(-1)!;
+	const yaml = () => (existsSync(join(d.fx.stateDir, "duties.yaml")) ? readFileSync(join(d.fx.stateDir, "duties.yaml"), "utf8") : "");
+	await call("duty", { agent: "alpha", name: "disk", every: "1h", brief: "Mine now." });
+	assert.equal(await result(), "alpha.md has a duty named disk; it's Brian's to change.");
+	assert.match(d.systems.w0!, /- Alpha \(id: alpha, test\)\n {2}Duty disk, every 5m: runs `cat df\.txt`, wakes when its result changes\. Brief: Free some space\.\n/);
+
+	// Without a check, a duty wakes every time, starting with its first run.
+	await call("duty", { agent: "Alpha", name: "nightly", every: "1d", brief: "Check the backups." });
+	assert.equal(await result(), "Added Alpha's duty: nightly, every 1d: wakes every time. Brief: Check the backups.");
+	const thread = (await until(() => d.woken().then((w) => w.find((x) => x.title === "duty: nightly"))))!;
+	assert.deepEqual(await d.texts(thread.id, "user"), ["[duty nightly] Check the backups."]);
+	assert.equal(thread.delegatedBy, boss);
+	assert.deepEqual((await d.duties()).map((x) => [x.name, x.added]), [["disk", undefined], ["nightly", true]]);
+	assert.match(d.systems.w1!, /## Your duties\nstomp runs these .*\n- disk, every 5m: .*\n- nightly, every 1d: wakes every time\. Brief: Check the backups\.\n<\/instructions>/);
+	await until(async () => (await d.reports()).length > 0);
+	assert.match(d.systems.w0!, /Duty nightly, every 1d: wakes every time\. Brief: Check the backups\. \(you added it\)/);
+
+	// Found by review: a check is judged where it will run, Alpha's checkout on main here, and a stray path doesn't turn
+	// the ask into a file ask whose answer skips judging the check. Brian declines, and nothing is written.
+	execFileSync("git", ["-C", d.cwd, "-c", "user.name=t", "-c", "user.email=t@t", "init", "-q", "-b", "main"]);
+	execFileSync("git", ["-C", d.cwd, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]);
+	const push = { agent: "alpha", name: "nightly", every: "1d", check: "git push origin HEAD", brief: "Ship.", path: "/proc/self/environ" };
+	const asking = call("duty", push);
+	const ask = await d.ask();
+	assert.deepEqual([ask.command, ask.why, ask.agent, ask.cwd], ["git push origin HEAD", "rule: push from main", "boss", d.cwd]);
+	assert.equal(await d.answer(ask.id, { decision: "deny" }), 200);
+	await asking;
+	assert.match(await result(), /Brian declined/);
+	assert.doesNotMatch(yaml(), /git push/);
+	// The built-in rules clear this one.
+	await call("duty", { agent: "alpha", name: "nightly", every: "1d", check: "cat backups.log", wake: "failed", brief: "Fix it." });
+	assert.match(await result(), /^Replaced Alpha's duty: nightly, every 1d: runs `cat backups\.log`, wakes when it fails\. Brief: Fix it\./);
+	await call("duty", { agent: "alpha", name: "weekly", every: "1w", brief: "x" });
+	assert.match(await result(), /^duty weekly: every must be like 15m/);
+
+	await call("duty", { agent: "alpha", name: "nightly", remove: true });
+	assert.match(await result(), /^Removed Alpha's duty nightly\. It was \{"name":"nightly","every":"1d","check":"cat backups.log","wake":"failed","brief":"Fix it."\}\.$/);
+	await until(async () => (await d.duties()).length === 1);
+	assert.equal(yaml(), "{}\n");
+
+	// Found while adding the duty tool: the supervisor's read_file had no guard, so she could read stomp's secrets unasked.
+	const reading = call("read_file", { path: "/proc/self/environ" });
+	const read = await d.ask();
+	assert.deepEqual([read.command, read.why], ["read_file /proc/self/environ", "rule: stomp's own files"]);
+	assert.equal(await d.answer(read.id, { decision: "deny" }), 200);
+	await reading;
 });

@@ -72,7 +72,9 @@ reports through the supervisor. It's waiting for you in the morning.
 - **Notebooks and consults.** Agents `remember` things across threads, and you can read and edit
   their notebooks. They can `consult` each other for read-only answers.
 - **Duties.** A check on a schedule wakes an agent only when the result changes, and the finding
-  comes back through the supervisor.
+  comes back through the supervisor. A duty with no check wakes the agent every time, for work only
+  its tools can do. Ask the supervisor for one and it adds it, after the judge clears the check like
+  any command. Those live in the state directory's `duties.yaml`; the ones in agent files stay yours.
 - **Your subscriptions, not API bills.** GitHub Copilot, ChatGPT (Codex) and Claude Pro/Max sign in
   with OAuth through [pi-ai](https://www.npmjs.com/package/@earendil-works/pi-ai), plus any
   OpenAI-compatible server (llama.cpp, vLLM, Lemonade, …). Agents name models by alias, so switching

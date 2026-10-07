@@ -29,8 +29,11 @@ export type AgentConfig = {
 	error?: string;
 };
 
-/** A scheduled check: every `every` (`ms`), run `check`; wake the agent with `brief` when its result `changed`, it `failed`, or `always`. */
-export type Duty = { name: string; every: string; ms: number; check: string; wake: "changed" | "failed" | "always"; brief: string };
+/**
+ * A scheduled check: every `every` (`ms`), run `check`; wake the agent with `brief` when its result `changed`, it `failed`,
+ * or `always`. Without a check, it wakes the agent every time. `added`: the supervisor's, from `$STOMP_STATE/duties.yaml`.
+ */
+export type Duty = { name: string; every: string; ms: number; check?: string; wake: "changed" | "failed" | "always"; brief: string; added?: true };
 
 export type AgentContext = {
 	resolveModel(spec: string): ModelRef | string;
@@ -39,6 +42,8 @@ export type AgentContext = {
 	scratch: string;
 	/** Notebooks: `$STOMP_STATE/notes`. */
 	notes: string;
+	/** The duties the supervisor added: `$STOMP_STATE/duties.yaml`, a list per agent id. */
+	duties: string;
 	/** Why an agent can't have this MCP server's tools (unknown, or it didn't start), or undefined. */
 	mcp(name: string): string | undefined;
 };
@@ -47,30 +52,47 @@ const LEVELS: readonly string[] = ["off", "minimal", "low", "medium", "high", "x
 const WAKES: readonly string[] = ["changed", "failed", "always"];
 const UNITS: Record<string, number> = { m: 60_000, h: 3_600_000, d: 86_400_000 };
 
-function parseDuties(raw: unknown): Duty[] {
+/** `file`: duties.yaml, whose duties are the supervisor's. */
+export function parseDuties(raw: unknown, file?: string): Duty[] {
 	if (raw === undefined) return [];
-	if (!Array.isArray(raw)) throw new Error("duties must be a list");
-	const names = new Set<string>();
+	if (!Array.isArray(raw)) throw new Error(`${file ? `${file}: ` : ""}duties must be a list`);
 	return raw.map((item: Record<string, unknown> | null, i) => {
 		const duty = item ?? {};
-		const where = `duty ${typeof duty.name === "string" ? duty.name : i + 1}`;
+		const where = `${file ? `${file}: ` : ""}duty ${typeof duty.name === "string" ? duty.name : i + 1}`;
 		const text = (field: string) => {
 			if (typeof duty[field] !== "string" || !duty[field].trim()) throw new Error(`${where}: ${field} is required`);
 			return duty[field].trim();
 		};
-		const [name, every, check, brief] = [text("name"), text("every"), text("check"), text("brief")];
+		const [name, every, brief] = [text("name"), text("every"), text("brief")];
+		const check = duty.check === undefined ? undefined : text("check");
 		const match = /^(\d+)([mhd])$/.exec(every);
 		const ms = match ? Number(match[1]) * UNITS[match[2]!]! : 0;
 		if (ms < 5 * 60_000) throw new Error(`${where}: every must be like 15m, 6h or 1d, and at least 5m`);
-		const wake = duty.wake ?? "changed";
+		const wake = duty.wake ?? (check === undefined ? "always" : "changed");
 		if (!WAKES.includes(wake as string)) throw new Error(`${where}: wake must be one of ${WAKES.join(", ")}`);
-		if (names.has(name)) throw new Error(`${where}: two duties have this name`);
-		names.add(name);
-		return { name, every, ms, check, wake: wake as Duty["wake"], brief };
+		if (check === undefined && wake !== "always") throw new Error(`${where}: without a check, it can only wake every time`);
+		return { name, every, ms, ...(check !== undefined && { check }), wake: wake as Duty["wake"], brief, ...(file !== undefined && { added: true as const }) };
 	});
 }
 
-export function parseAgent(id: string, text: string, house: string, context: AgentContext): AgentConfig {
+const WAKE_TEXT = { changed: "wakes when its result changes", failed: "wakes when it fails", always: "wakes every time" };
+
+/** A duty as agents read it: their own in their instructions, the team's in the supervisor's team section. */
+export const dutyText = (d: Duty): string => `${d.name}, every ${d.every}: ${d.check ? `runs \`${d.check}\`, ` : ""}${WAKE_TEXT[d.wake]}. Brief: ${d.brief}`;
+
+/** duties.yaml, by agent id. Only the duty tool writes it, so a malformed file (a hand edit) is logged and skipped. */
+function addedDuties(file: string): Record<string, unknown> {
+	try {
+		const all: unknown = parse(readOptional(file));
+		return all !== null && typeof all === "object" && !Array.isArray(all) ? (all as Record<string, unknown>) : {};
+	} catch (error) {
+		console.error(`[stomp] ${file}: ${(error as Error).message}`);
+		return {};
+	}
+}
+
+/** `added`: this agent's list in duties.yaml. */
+export function parseAgent(id: string, text: string, house: string, context: AgentContext, added?: unknown): AgentConfig {
 	const agent: AgentConfig = {
 		id,
 		name: id,
@@ -103,7 +125,13 @@ export function parseAgent(id: string, text: string, house: string, context: Age
 		}
 		agent.thinking = (meta.thinking as ModelThinkingLevel | undefined) ?? "medium";
 		if (typeof meta.cwd === "string") agent.cwd = expandHome(meta.cwd);
-		agent.duties = parseDuties(meta.duties);
+		agent.duties = [...parseDuties(meta.duties), ...parseDuties(added, "duties.yaml")];
+		const names = agent.duties.map((duty) => duty.name);
+		const twice = names.find((name, i) => names.indexOf(name) !== i);
+		if (twice !== undefined) throw new Error(`two duties are named ${twice}`);
+		// Found in use: asked what duties they had, agents said "none", because the frontmatter never reached them.
+		const listed = agent.duties.map((duty) => `- ${dutyText(duty)}`).join("\n");
+		if (listed) agent.instructions += `\n\n## Your duties\nstomp runs these on their schedule and wakes you with the brief when one calls for it.\n${listed}`;
 		if (meta.mcp !== undefined && !Array.isArray(meta.mcp)) throw new Error("mcp must be a list of servers from stomp.yaml");
 		agent.mcp = ((meta.mcp ?? []) as unknown[]).map(String);
 		const problem = agent.mcp.map((name) => context.mcp(name)).find(Boolean);
@@ -140,9 +168,10 @@ export const notebookText = (agent: AgentConfig): string => readOptional(agent.n
 /** Every agent file, sorted by id. Only the first valid supervisor keeps the role; later ones get an error. */
 export function loadAgents(configDir: string, context: AgentContext): AgentConfig[] {
 	const house = readOptional(join(configDir, "house.md")).trim();
+	const added = addedDuties(context.duties);
 	const dir = join(configDir, "agents");
 	const files = readdirSync(dir).filter((file) => file.endsWith(".md")).sort();
-	const agents = files.map((file) => parseAgent(file.slice(0, -3), readOptional(join(dir, file)), house, context));
+	const agents = files.map((file) => parseAgent(file.slice(0, -3), readOptional(join(dir, file)), house, context, added[file.slice(0, -3)]));
 	const supervisor = agents.find((agent) => agent.role === "supervisor" && agent.error === undefined);
 	for (const agent of agents) {
 		if (agent.role === "supervisor" && agent.error === undefined && agent !== supervisor) {

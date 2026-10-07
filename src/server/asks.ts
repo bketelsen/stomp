@@ -95,6 +95,8 @@ async function ownFile(judge: Judge, api: HookApi, path: string, c: Context): Pr
 }
 
 const bash: Judged = (name, args) => (name === "bash" ? String(args.command ?? "") : undefined);
+/** Found by review: any tool's `path` used to count, so a stray one on another tool asked here and its answer skipped that tool's own guard. */
+const FILE_TOOLS = new Set(["read", "write", "edit", "read_file"]);
 
 /**
  * The guard: run what the judge clears; otherwise ask Brian and do what he says. Nothing automated says no. It judges
@@ -104,13 +106,14 @@ export function stompGuard(judge: Judge, asks: Asks, harness: () => Harness, jud
 	return hook(ToolTask, {
 		beforeTool: async (call, api, context) => {
 			// Every other tool runs unasked, and so do file tools (read, write, edit, read_file) outside stomp's own files.
-			const shell = judged(call.name, call.arguments);
-			const file = shell === undefined && judged === bash ? call.arguments.path : undefined;
+			const what = judged(call.name, call.arguments);
+			const shell = typeof what === "object" ? what.command : what;
+			const file = shell === undefined && judged === bash && FILE_TOOLS.has(call.name) ? call.arguments.path : undefined;
 			if (typeof file === "string" ? !(await ownFile(judge, api, file, context)) : shell === undefined) return undefined;
 			let answer = await api.memo<Answer>(MEMO, context);
 			if (answer === undefined) {
 				const command = typeof file === "string" ? `${call.name} ${file}` : shell!;
-				const place = await placeOf(api, harness, context);
+				const place = { ...(await placeOf(api, harness, context)), ...(typeof what === "object" && { cwd: what.cwd }) };
 				const asked = (by: "ask-rule" | "fallback", detail: string, why: string): Verdict => {
 					const line = { at: Date.now(), thread: place.thread, agent: place.agent, command, outcome: "ask", by, detail } as const;
 					judge.record(line);

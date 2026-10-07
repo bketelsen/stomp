@@ -1,11 +1,14 @@
-// stomp-supervisor: delegate, message, cancel and read, the read-only tools, the Delegation task and the team section.
-// Only the supervisor's threads select it. Tools never wait on a Delegation or a thread they haven't aborted.
+// stomp-supervisor: delegate, message, cancel, read and duty, the read-only tools, the guard, the Delegation task and the
+// team section. Only the supervisor's threads select it. Tools never wait on a Delegation or a thread they haven't aborted.
+import { writeFileSync } from "node:fs";
 import type { Message } from "@earendil-works/pi-ai";
-import { type ConversationId, defineExtension, defineTool, type Extension, type Harness } from "@earendil-works/pi-durable";
+import { type ConversationId, defineExtension, defineTool, type Extension, type Harness, type HookRegistration } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
+import { isMap, isSeq, parseDocument } from "yaml";
 import type { StateSnapshot } from "../shared/protocol.ts";
-import type { AgentConfig } from "./agents.ts";
+import { type AgentConfig, dutyText, parseDuties, readOptional } from "./agents.ts";
 import type { DelegationTask } from "./delegation.ts";
+import type { Judged } from "./mcp.ts";
 import { fetchTool, readFileTool } from "./readonly.ts";
 import { stopThread } from "./stop.ts";
 import { teamSection } from "./team.ts";
@@ -22,6 +25,10 @@ export type SupervisorHost = {
 	workspaces: Workspaces;
 	/** The Delegation task, shared with duties. */
 	delegation: DelegationTask;
+	/** The guard, judging `judged`'s commands, or bash and stomp's own files by default (here: read_file's). */
+	guard(judged?: Judged): HookRegistration;
+	/** `$STOMP_STATE/duties.yaml`: the duties the supervisor adds. Agents reload when it changes. */
+	dutiesFile: string;
 };
 
 const reply = (text: string, isError = false) => ({ content: [{ type: "text" as const, text }], isError });
@@ -142,10 +149,66 @@ export function stompSupervisor(host: SupervisorHost): Extension {
 		},
 	});
 
+	const duty = defineTool({
+		name: "duty",
+		description:
+			"Add, replace or remove a team member's scheduled duty. Every `every`, stomp runs the check in their shell and wakes them with the brief as `wake` says; without a check, it wakes them every time. What they find comes to you as a report.",
+		parameters: Type.Object({
+			agent: Type.String({ description: "The agent's id" }),
+			name: Type.String({ description: "Short and unique for them, e.g. backups" }),
+			remove: Type.Optional(Type.Boolean({ description: "Remove the duty you added with this name" })),
+			every: Type.Optional(Type.String({ description: "Like 30m, 6h or 1d; at least 5m" })),
+			brief: Type.Optional(Type.String({ description: "What they do when woken" })),
+			check: Type.Optional(Type.String({ description: "A shell command, judged now like any command. Leave it out to wake them every time." })),
+			wake: Type.Optional(
+				Type.Union([Type.Literal("changed"), Type.Literal("failed"), Type.Literal("always")], {
+					description: "With a check: when its output or exit changes (default), when it fails, or every time",
+				}),
+			),
+		}),
+		execute: async ({ agent: key, name, remove, ...fields }) => {
+			const agent = agentOf(key);
+			if (agent === undefined || agent.role === "supervisor") return reply(`No team member "${key}". The team: ${team()}.`, true);
+			if (agent.duties.some((d) => d.name === name && !d.added)) return reply(`${agent.id}.md has a duty named ${name}; it's Brian's to change.`, true);
+			// No await from here to the write, so parallel calls don't lose each other's changes.
+			const doc = parseDocument(readOptional(host.dutiesFile));
+			if (doc.errors.length) return reply(`duties.yaml is malformed, so Brian has to fix it first: ${doc.errors[0]!.message}`, true);
+			const seq = doc.get(agent.id);
+			const at = isSeq(seq) ? seq.items.findIndex((item) => isMap(item) && item.get("name") === name) : -1;
+			if (remove) {
+				if (at < 0) return reply(`You haven't added a duty named ${name} for ${agent.name}.`, true);
+				const old = JSON.stringify(doc.getIn([agent.id, at]));
+				doc.deleteIn([agent.id, at]);
+				if (isSeq(seq) && seq.items.length === 0) doc.delete(agent.id);
+				writeFileSync(host.dutiesFile, doc.toString());
+				return reply(`Removed ${agent.name}'s duty ${name}. It was ${old}.`);
+			}
+			const entry = Object.fromEntries(Object.entries({ name, ...fields, check: fields.check?.trim() || undefined }).filter(([, v]) => v !== undefined));
+			let parsed: string;
+			try {
+				parsed = dutyText(parseDuties([entry], "duties.yaml")[0]!);
+			} catch (error) {
+				return reply((error as Error).message.replace(/^duties\.yaml: /, ""), true);
+			}
+			if (at >= 0) doc.setIn([agent.id, at], entry);
+			else if (isSeq(seq)) doc.addIn([agent.id], entry);
+			else doc.set(agent.id, [entry]);
+			writeFileSync(host.dutiesFile, doc.toString());
+			return reply(`${at >= 0 ? "Replaced" : "Added"} ${agent.name}'s duty: ${parsed}`);
+		},
+	});
+	// Brian's checks run unjudged, so one set here is judged as it's set, where it will run: it runs every time after.
+	const dutyCheck: Judged = (toolName, args) => {
+		const command = toolName === "duty" && !args.remove && typeof args.check === "string" ? args.check.trim() : "";
+		const cwd = agentOf(String(args.agent))?.cwd;
+		return command ? (cwd ? { command, cwd } : command) : undefined;
+	};
+
 	return defineExtension({
 		name: "stomp-supervisor",
-		tools: [delegate, message, cancel, read, readFileTool(), fetchTool],
+		tools: [delegate, message, cancel, read, duty, readFileTool(), fetchTool],
 		tasks: [Delegation],
+		hooks: [host.guard(), host.guard(dutyCheck)],
 		sections: [teamSection(host.agents)],
 	}) as Extension;
 }
