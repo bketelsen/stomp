@@ -5,6 +5,7 @@ import { after, type TestContext, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { Ask, JudgeDecision } from "../src/shared/protocol.ts";
+import { UNAUTHORIZED } from "../src/server/http.ts";
 import { startStomp } from "../src/server/stomp.ts";
 import { fakeServer, jevAnswer } from "./support/fakes.ts";
 import { agentFile, fixture, until } from "./support/fixture.ts";
@@ -43,6 +44,8 @@ async function start(t: TestContext) {
 	});
 	const runs = join(fx.root, "runs.txt");
 	const s = {
+		/** stomp's address, for an agent's curl. */
+		url: () => stomp.url,
 		runs,
 		ran: () => (existsSync(runs) ? readFileSync(runs, "utf8").split("\n").filter(Boolean).length : 0),
 		state: () => stomp.state(),
@@ -52,8 +55,10 @@ async function start(t: TestContext) {
 			(await (await stomp.harness.conversation(thread as ConversationId, ctx))!.submit({ type: "input", content: text }, ctx)).wait(ctx),
 		ask: () => until(async () => (await stomp.state()).asks[0]),
 		answer: async (id: string, body: unknown) =>
-			(await fetch(`${stomp.url}/api/asks/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(body) })).status,
-		decisions: async () => ((await (await fetch(`${stomp.url}/api/judge?limit=50`)).json()) as { decisions: JudgeDecision[] }).decisions,
+			(await fx.fetch(`${stomp.url}/api/asks/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(body) })).status,
+		newThread: async (agent: string) =>
+			((await (await fx.fetch(`${stomp.url}/api/agents/${agent}/threads`, { method: "POST", body: "{}" })).json()) as { thread: number }).thread,
+		decisions: async () => ((await (await fx.fetch(`${stomp.url}/api/judge?limit=50`)).json()) as { decisions: JudgeDecision[] }).decisions,
 		/** The text of every bash result in the thread, oldest first. */
 		results: async (thread: number) =>
 			(await (await stomp.harness.conversation(thread as ConversationId, ctx))!.entries({}, 200, undefined, ctx)).items
@@ -213,4 +218,19 @@ test("when always can't be saved, the command still runs once and the answer rep
 	await until(() => s.ran() === 1);
 	await run;
 	assert.deepEqual((await s.state()).asks, []);
+});
+
+// Found while reading the code: with no token, an agent's curl read the asks from stomp's API and answered its own.
+test("an agent's curl to stomp's API is refused, so its ask waits for Brian", async (t) => {
+	const s = await start(t);
+	const asking = s.say(await s.desk("alpha"), `run: echo ask >> ${s.runs}`);
+	const ask = await s.ask();
+	const other = await s.newThread("alpha");
+	await s.say(other, `run: curl -s ${s.url()}/api/state`);
+	await s.say(other, `run: curl -s -X POST '${s.url()}/api/asks/${encodeURIComponent(ask.id)}' -d '{"decision":"always"}'`);
+	assert.deepEqual((await s.results(other)).slice(-2), Array(2).fill(JSON.stringify({ error: UNAUTHORIZED })));
+	assert.deepEqual([(await s.state()).asks.map((a) => a.id), s.ran()], [[ask.id], 0]);
+	assert.equal(await s.answer(ask.id, { decision: "allow" }), 200);
+	await asking;
+	assert.equal(s.ran(), 1);
 });

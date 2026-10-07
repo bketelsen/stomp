@@ -5,6 +5,8 @@
 #   deploy/vm.sh update [--apply]  say what an update does; --apply pushes this working tree, runs
 #                                  npm ci and npm run build in the VM, installs the unit, restarts stomp
 #   deploy/vm.sh config            copy ~/.config/stomp into the VM (no secrets live there)
+#   deploy/vm.sh open              open stomp in your browser with its API token, which the browser keeps;
+#                                  once per browser
 #   deploy/vm.sh login <provider>  github-copilot | openai | anthropic, as the VM's stomp user; you
 #                                  finish the flow in your browser (paste the final redirect URL back)
 #   deploy/vm.sh login github      gh's device flow for the stomp user; git then pushes through gh
@@ -148,7 +150,7 @@ status() {
   incus list local: "^$name\$" -c ns4 -f compact
   as_stomp 'cat ~/stomp/DEPLOYED 2>/dev/null; systemctl --user --no-pager status stomp | head -n 12' || true
   echo "desktop: $name-web.socket $(systemctl --user is-active "$name-web.socket" || true)," \
-    "http://127.0.0.1:7311/api/state -> $(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:7311/api/state || true)"
+    "http://127.0.0.1:7311/ -> $(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:7311/ || true)"
 }
 
 case ${1:-} in
@@ -159,6 +161,11 @@ case ${1:-} in
     tar -C ~/.config/stomp --exclude=.git --exclude=credentials.json --exclude='.env*' -cz . |
       as_stomp 'mkdir -p ~/.config/stomp && tar -xzv -C ~/.config/stomp
       systemctl --user try-restart stomp 2>/dev/null || true'
+    ;;
+  open)
+    # In the fragment, which never reaches a server; the page keeps the token and takes it out of the address bar.
+    token=$(as_stomp 'cat ~/.local/share/stomp/token') || { echo "no token yet: stomp makes one when it first starts" >&2; exit 1; }
+    xdg-open "http://127.0.0.1:7311/#token=$token"
     ;;
   login)
     case ${2:-} in

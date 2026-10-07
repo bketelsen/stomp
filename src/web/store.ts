@@ -59,6 +59,18 @@ try {
 	collapsed = JSON.parse(localStorage.getItem(COLLAPSED) ?? "[]") ?? [];
 } catch {}
 
+/** stomp's token, from the `#token=…` link `deploy/vm.sh open` opens. This browser keeps it and sends it with every request. */
+const TOKEN = "stomp.token";
+const linked = /^#token=(.+)$/.exec(location.hash)?.[1];
+let token = linked ? decodeURIComponent(linked) : "";
+try {
+	if (linked) localStorage.setItem(TOKEN, token);
+	else token = localStorage.getItem(TOKEN) ?? "";
+} catch {}
+if (linked) history.replaceState(null, "", location.pathname + location.search);
+// The link opened in a stomp tab that's already open changes only the hash, which doesn't reload the page.
+addEventListener("hashchange", () => /^#token=./.test(location.hash) && location.reload());
+
 let state: Store = { connected: false, older: [], olderDone: false, unread: seen?.unread ?? [], collapsed };
 const listeners = new Set<() => void>();
 
@@ -85,17 +97,19 @@ function send(message: ClientMessage) {
 }
 
 export function connect() {
-	const ws = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/ws`);
+	const ws = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/ws?token=${encodeURIComponent(token)}`);
 	socket = ws;
 	ws.onopen = () => {
 		set({ connected: true });
 		if (state.thread !== undefined) send({ type: "subscribe", thread: state.thread });
 	};
 	ws.onmessage = (event) => receive(JSON.parse(String(event.data)) as ServerMessage);
-	ws.onclose = () => {
+	ws.onclose = (event) => {
 		if (socket !== ws) return;
 		socket = undefined;
 		set({ connected: false });
+		// A missing or wrong token: say how to get it, and stop trying until the link is opened.
+		if (event.code === 4401) return set({ error: event.reason });
 		setTimeout(connect, 1000);
 	};
 }
@@ -191,7 +205,8 @@ export const clearError = () => set({ error: undefined });
 async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
 	const response = await fetch(`/api${path}`, {
 		method,
-		...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+		headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+		...(body === undefined ? {} : { body: JSON.stringify(body) }),
 	});
 	const json = (await response.json().catch(() => ({}))) as T & { error?: string };
 	if (!response.ok) throw new Error(json.error ?? `${response.status} ${response.statusText}`);

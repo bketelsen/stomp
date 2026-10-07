@@ -61,8 +61,8 @@ async function start(t: TestContext) {
 				.flatMap((e) => e.model ?? [])
 				.flatMap((m) => (m.role === "toolResult" ? [m.content.map((c) => ("text" in c ? c.text : "")).join("")] : []))[0]!,
 		ask: () => until(async () => (await stomp.state()).asks[0]),
-		answer: async (id: string, body: unknown) => (await fetch(`${stomp.url}/api/asks/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(body) })).status,
-		decision: async () => ((await (await fetch(`${stomp.url}/api/judge?limit=1`)).json()) as { decisions: JudgeDecision[] }).decisions[0]!,
+		answer: async (id: string, body: unknown) => (await fx.fetch(`${stomp.url}/api/asks/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(body) })).status,
+		decision: async () => ((await (await fx.fetch(`${stomp.url}/api/judge?limit=1`)).json()) as { decisions: JudgeDecision[] }).decisions[0]!,
 		/** What reached the MCP server. */
 		logged: () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []),
 	};

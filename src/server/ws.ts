@@ -4,7 +4,7 @@ import type { Server } from "node:http";
 import { BACKGROUND_CONTEXT as ctx, withAbortSignal } from "@earendil-works/chord/context";
 import { type WebSocket, WebSocketServer } from "ws";
 import type { ClientMessage, ServerMessage } from "../shared/protocol.ts";
-import type { Api } from "./http.ts";
+import { type Api, authorized, UNAUTHORIZED } from "./http.ts";
 import type { StateFeed } from "./state.ts";
 
 type Stop = () => Promise<unknown> | void;
@@ -26,9 +26,11 @@ async function watchThread(api: Api, ws: WebSocket, thread: number, send: (msg: 
 	}
 }
 
-export function attachBridge(server: Server, api: Api, state: StateFeed): WebSocketServer {
+export function attachBridge(server: Server, api: Api, state: StateFeed, token: string): WebSocketServer {
 	const wss = new WebSocketServer({ server, path: "/api/ws" });
-	wss.on("connection", (ws) => {
+	wss.on("connection", (ws, req) => {
+		// Closed rather than refused at the handshake, so the browser can tell a wrong token from a server that's down.
+		if (!authorized(req, token)) return ws.close(4401, UNAUTHORIZED);
 		const send = (msg: ServerMessage) => {
 			if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
 		};

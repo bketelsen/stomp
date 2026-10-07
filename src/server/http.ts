@@ -1,4 +1,5 @@
 // REST per src/shared/protocol.ts, and the built web UI from dist/web with an SPA fallback.
+import { timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, join, normalize, sep } from "node:path";
@@ -134,12 +135,27 @@ function serveStatic(webDir: string, url: URL, res: ServerResponse): void {
 	res.writeHead(200, { "content-type": TYPES[extname(file)] ?? "application/octet-stream" }).end(readFileSync(file));
 }
 
-export function httpHandler(api: Api, webDir: string) {
+/** Shown in the browser when the token is missing or wrong; a WebSocket close reason holds at most 123 bytes. */
+export const UNAUTHORIZED = "stomp needs its token: open it with deploy/vm.sh open (see the README)";
+
+/**
+ * The API is for Brian's browser, which sends stomp's token as a bearer header, or as `?token=` on the WebSocket, which
+ * can't set headers. Agents' shells run as stomp's user and reach its port; the token sits in $STOMP_STATE with stomp's
+ * other secrets, and the judge guards it as it guards them.
+ */
+export function authorized(req: IncomingMessage, token: string): boolean {
+	const given = Buffer.from(req.headers.authorization?.replace(/^Bearer /, "") ?? new URL(req.url ?? "/", "http://stomp").searchParams.get("token") ?? "");
+	return given.length === Buffer.byteLength(token) && timingSafeEqual(given, Buffer.from(token));
+}
+
+export function httpHandler(api: Api, webDir: string, token: string) {
 	return (req: IncomingMessage, res: ServerResponse): void => {
 		const url = new URL(req.url ?? "/", "http://stomp");
-		const handled = url.pathname.startsWith("/api/")
-			? route(api, req, res, url)
-			: Promise.resolve().then(() => serveStatic(webDir, url, res));
+		const handled = !url.pathname.startsWith("/api/")
+			? Promise.resolve().then(() => serveStatic(webDir, url, res))
+			: authorized(req, token)
+				? route(api, req, res, url)
+				: Promise.reject(new HttpError(401, UNAUTHORIZED));
 		handled.catch((error: Error) => {
 			const status = error instanceof HttpError ? error.status : 500;
 			if (status === 500) console.error("[stomp]", req.method, url.pathname, error);
