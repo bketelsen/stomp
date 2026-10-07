@@ -14,6 +14,7 @@ const context: AgentContext = {
 	families: [],
 	scratch: join(fx.root, "scratch"),
 	notes: join(fx.root, "notes"),
+	mcp: (name) => (name === "nas" ? undefined : `unknown MCP server "${name}"`),
 };
 
 test("an agent file: frontmatter, name from the H1, house rules first, defaults", () => {
@@ -26,7 +27,7 @@ test("an agent file: frontmatter, name from the H1, house rules first, defaults"
 	);
 	assert.equal(agent.instructions, "House.\n\nintro\n# Miles Teg\n\nBashar.");
 	assert.equal(agent.cwd, join(fx.root, "scratch", "teg"));
-	assert.deepEqual(agent.duties, []);
+	assert.deepEqual([agent.duties, agent.mcp, parseAgent("t", agentFile("T", "claude", "mcp: [nas]\n"), "", context).mcp], [[], [], ["nas"]]);
 	const duty = "duties:\n  - { name: hosts, every: 15m, check: 'nc -z h 22', brief: Say why. }\n  - { name: ci, every: 1d, check: x, wake: failed, brief: y }\n";
 	assert.deepEqual(parseAgent("teg", agentFile("T", "claude", duty), "", context).duties, [
 		{ name: "hosts", every: "15m", ms: 900_000, check: "nc -z h 22", wake: "changed", brief: "Say why." },
@@ -42,6 +43,8 @@ test("bad files get an error instead of throwing", () => {
 	assert.match(error(agentFile("X", "x/acme-code-1"))!, /unknown family/);
 	assert.match(error(agentFile("X", "claude", "role: boss\n"))!, /role/);
 	assert.match(error(agentFile("X", "claude", "thinking: lots\n"))!, /thinking/);
+	assert.match(error(agentFile("X", "claude", "mcp: [nas, nope]\n"))!, /^unknown MCP server "nope"$/);
+	assert.match(error(agentFile("X", "claude", "mcp: nas\n"))!, /mcp must be a list/);
 	assert.match(error("---\nmodel: [unclosed\n---\n# X\n")!, /./);
 	const duty = (yaml: string) => error(agentFile("X", "claude", `duties:\n  - { name: d, check: c, brief: b, ${yaml} }\n`));
 	assert.match(duty("every: 4m")!, /^duty d: every must be .* at least 5m/);

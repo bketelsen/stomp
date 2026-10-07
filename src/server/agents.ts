@@ -24,6 +24,8 @@ export type AgentConfig = {
 	/** `$STOMP_STATE/notes/<id>.md`. */
 	notebook: string;
 	duties: Duty[];
+	/** The MCP servers (stomp.yaml's `mcp`) whose tools this agent has. */
+	mcp: string[];
 	error?: string;
 };
 
@@ -37,6 +39,8 @@ export type AgentContext = {
 	scratch: string;
 	/** Notebooks: `$STOMP_STATE/notes`. */
 	notes: string;
+	/** Why an agent can't have this MCP server's tools (unknown, or it didn't start), or undefined. */
+	mcp(name: string): string | undefined;
 };
 
 const LEVELS: readonly string[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -80,6 +84,7 @@ export function parseAgent(id: string, text: string, house: string, context: Age
 		instructions: "",
 		notebook: join(context.notes, `${id}.md`),
 		duties: [],
+		mcp: [],
 	};
 	try {
 		const match = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)([\s\S]*)$/.exec(text);
@@ -99,6 +104,10 @@ export function parseAgent(id: string, text: string, house: string, context: Age
 		agent.thinking = (meta.thinking as ModelThinkingLevel | undefined) ?? "medium";
 		if (typeof meta.cwd === "string") agent.cwd = expandHome(meta.cwd);
 		agent.duties = parseDuties(meta.duties);
+		if (meta.mcp !== undefined && !Array.isArray(meta.mcp)) throw new Error("mcp must be a list of servers from stomp.yaml");
+		agent.mcp = ((meta.mcp ?? []) as unknown[]).map(String);
+		const problem = agent.mcp.map((name) => context.mcp(name)).find(Boolean);
+		if (problem) throw new Error(problem);
 		if (!agent.model) throw new Error("model is required");
 		const ref = context.resolveModel(agent.model);
 		if (typeof ref === "string") throw new Error(ref);

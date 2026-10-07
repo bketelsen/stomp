@@ -1,6 +1,6 @@
-// The command judge (docs/plan.md "The envelope, the judge, and asks"). A bash command is split into simple commands
-// and matched against Brian's rules and the built-in ones; what no rule decides goes to Jev, or to a local Qwen when Jev
-// can't answer. It says run or ask, never no, and it never sees the task. Every decision goes to $STOMP_STATE/judge.log.
+// The command judge (docs/plan.md "The envelope, the judge, and asks"). A bash command, or an MCP call as mcp.ts writes
+// it, is split into simple commands and matched against Brian's rules and the built-in ones; what no rule decides goes to
+// Jev, or to a local Qwen when Jev can't answer. It says run or ask, never no, never sees the task, and logs every decision.
 import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -257,8 +257,9 @@ export function createJudge(options: JudgeOptions) {
 		const mine = hit(rules.ask);
 		if (mine !== undefined || hit(rules.allow)) return mine ?? true;
 		if (seg.piped && /^(.*\/)?(ba|z|da|k)?sh$/.test(seg.argv[0] ?? "")) return "piped into a shell";
-		if (/credentials\.json|TYPESAFE_API_KEY/.test(seg.text)) return "names a stomp secret";
+		if (/credentials\.json|TYPESAFE_API_KEY|\/environ\b/.test(seg.text)) return "names a stomp secret";
 		if (own.test(seg.text)) return "stomp's own files";
+		if (seg.argv[0] === "mcp") return matches("mcp ** --destructive **", seg) ? "destructive MCP tool" : matches("mcp ** --read-only **", seg) || undefined; // by annotation
 		return hit(ASK) ?? (seg.argv.length === 0 || (hit(ALLOW) && !seg.argv.some((w) => UNLESS[seg.argv[0]!]?.test(w))) ? true : undefined);
 	}
 

@@ -272,6 +272,14 @@ naive `tofu destroy` rule caught an `echo` into a runbook.
 4. **If Jev errors:** ask local Qwen the same question in single-token logprob mode (thinking off,
    about 0.7 s), with the same routing. If that fails too, ask me. It never denies.
 
+**MCP tools** go through the same guard, shipped in each `mcp-<server>` extension. A call is judged
+as the command `mcp <server> <tool> [--read-only|--destructive] '<args as JSON>'`, marked from the
+tool's annotations: `readOnlyHint` runs by a built-in allow rule, `destructiveHint` asks ("rule:
+destructive MCP tool"), and an unmarked tool goes to Jev, which sees the tool name and arguments. My
+rules come first, so `agents: { moneo: { allow: ["mcp truenas app_update **"] } }` lets one agent
+update apps without asking. Annotations are the server's word, like a make target's name: a server
+that marks a write read-only is believed.
+
 **Measured** on 176 labeled commands: 0 asks for a typical 40-command coding task, 2 for an ops task,
 and no false runs. A keyword fallback would have run `npm publish` and `make deploy`, so there isn't
 one.

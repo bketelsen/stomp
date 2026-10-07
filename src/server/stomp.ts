@@ -21,6 +21,7 @@ import { familyOf } from "./family.ts";
 import { type Api, HttpError, httpHandler } from "./http.ts";
 import { drainInboxes } from "./inbox.ts";
 import { createJudge, JEV_URL } from "./judge.ts";
+import { stompMcp } from "./mcp.ts";
 import { stopThread } from "./stop.ts";
 import { buildModels, resolveModel, SUBSCRIPTIONS } from "./models.ts";
 import { notebooks } from "./notebook.ts";
@@ -84,10 +85,9 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 			families: config.families,
 			scratch,
 			notes: join(options.stateDir, "notes"),
+			mcp: (name) => mcp.problem(name),
 		});
-	let agents = load();
 	const pool = reviewPool(config.review?.pool ?? [], (spec) => resolveModel(models, config.models, spec), family);
-	if (config.review) checkPool(pool, agents);
 	const ws = workspaces(options.stateDir);
 	const key = process.env.TYPESAFE_API_KEY?.trim();
 	const qwen = localJudge(config, models);
@@ -125,12 +125,21 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 	});
 	const notes = notebooks(() => agents, () => state.changed());
 	const consult = stompConsult({ agents: () => agents, guard });
-	// What every agent has besides its role's tools: its notebook, and consults.
+	// What every agent has besides its role's tools: its notebook, and consults; and the MCP servers its file lists.
 	const common = defineExtension({ name: "stomp-agent", tools: [...notes.tools, consult.tool], sections: [notes.section] }) as Extension;
-	const extensions = (agent: AgentConfig) => [agent.role === "supervisor" ? supervisor : coding, common];
+	const extensions = (agent: AgentConfig) => [agent.role === "supervisor" ? supervisor : coding, common, ...agent.mcp.map(mcp.extension)];
 	const registry = createRegistry();
 	for (const extension of [coding, supervisor, common, consult.extension]) registry.install(extension);
 	if (review) registry.install(review.extension);
+	const mcp = stompMcp(config.mcp, {
+		taken: new Set(registry.snapshot().tools().map(({ tool }) => tool.name)),
+		timeoutMs: config.bash.timeoutSeconds * 1000,
+		guard: (judged) => stompGuard(judge, asks, () => harness, judged),
+		install: (extension) => registry.install(extension),
+	});
+	await mcp.start();
+	let agents = load();
+	if (config.review) checkPool(pool, agents);
 	const storage = await openNodeSqliteStorage(join(options.stateDir, "stomp.sqlite"));
 	// Agents' shells don't inherit the server's secrets.
 	const shellEnv = hiddenEnv(options.stateDir);
@@ -195,6 +204,7 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 	const reload = () => {
 		reloading = reloading
 			.then(async () => {
+				await mcp.start();
 				agents = load();
 				await syncThreads(harness, agents, extensions);
 				state.changed();
@@ -242,6 +252,7 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 				stopReviewing?.();
 				await stopDuties();
 				await harness.close(ctx);
+				await mcp.close();
 			})()),
 	};
 }
