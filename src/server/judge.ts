@@ -3,12 +3,12 @@
 // Jev, or to a local Qwen when Jev can't answer. It says run or ask, never no, never sees the task, and logs every decision.
 import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { parse } from "yaml";
 import type { JudgeDecision } from "../shared/protocol.ts";
 
-/** One simple command: argv from the command word on, its source text, and whether its stdin is piped in. */
-export type Segment = { argv: string[]; text: string; piped: boolean };
+/** One simple command: argv from the command word on, its source text, whether its stdin is piped in, and every word and redirect target. */
+export type Segment = { argv: string[]; text: string; piped: boolean; words: string[] };
 
 const PREFIXES = new Set(["sudo", "env", "command", "time", "nice", "nohup", "exec"]);
 const KEYWORDS = new Set(["!", "{", "}", "if", "then", "else", "elif", "fi", "do", "done", "while", "until"]);
@@ -32,17 +32,17 @@ export function segments(src: string): Segment[] {
 	const lineEnd = (from: number) => (src.indexOf("\n", from) < 0 ? src.length : src.indexOf("\n", from));
 	const sticky = (re: RegExp) => ((re.lastIndex = i), re.test(src) ? src.slice(i, re.lastIndex) : undefined);
 	const walk = (close: string): void => {
-		let [words, word, start, piped, target, delimiter, quoted] = [[] as string[], undefined as string | undefined, i, false, false, false, false];
+		let [words, targets, word, start, piped, target, delimiter, quoted] = [[] as string[], [] as string[], undefined as string | undefined, i, false, false, false, false];
 		const docs: [string, boolean][] = [];
 		const add = (text: string) => void (word = (word ?? "") + text);
 		const endWord = () => {
-			if (word !== undefined && !target) void (delimiter ? docs.push([word, quoted]) : words.push(word));
+			if (word !== undefined) void (target ? targets.push(word) : delimiter ? docs.push([word, quoted]) : words.push(word));
 			if (word !== undefined) [word, target, delimiter] = [undefined, false, false];
 		};
 		const cut = (end: number, skip: number, next = false) => {
 			endWord();
-			if (src.slice(start, end).trim()) out.push({ argv: commandOf(words), text: src.slice(start, end).trim(), piped });
-			[words, i, piped, start] = [[], end + skip, next, end + skip];
+			if (src.slice(start, end).trim()) out.push({ argv: commandOf(words), text: src.slice(start, end).trim(), piped, words: [...words, ...targets] });
+			[words, targets, i, piped, start] = [[], [], end + skip, next, end + skip];
 		};
 		const nested = (closer: string, from = i) => ((i += closer === ")" ? 2 : 1), walk(closer), add(src.slice(from, i)));
 		while (i < src.length) {
@@ -240,14 +240,14 @@ export type Judge = ReturnType<typeof createJudge>;
 export function createJudge(options: JudgeOptions) {
 	mkdirSync(options.stateDir, { recursive: true });
 	const log = join(options.stateDir, "judge.log");
-	/** stomp's config dir, and its state dir but for agents' work/, scratch/ and repos/ (unless `..` leaves them). */
-	const own = new RegExp(`(\\$STOMP_STATE|\\$\\{STOMP_STATE\\}|/\\.local/share/stomp|${options.stateDir.replace(/\W/g, "\\$&")})(?![\\w.-]|/(work|scratch|repos)(?![\\w.-])(?!\\S*/\\.\\.))|(\\$STOMP_CONFIG|\\$\\{STOMP_CONFIG\\}|/\\.config/stomp|${options.configDir.replace(/\W/g, "\\$&")})(?![\\w.-])`);
+	/** stomp's config dir, and its state dir but for agents' work/, scratch/ and repos/ (unless `..` leaves them). classify resolves paths from the cwd too. */
+	const own = new RegExp(`(\\$STOMP_STATE|\\$\\{STOMP_STATE\\}|/\\.local/share/stomp|${options.stateDir.replace(/\W/g, "\\$&")})(?![\\w.-]|/(work|scratch|repos)(?![\\w.-])(?!\\S*/\\.\\.(?![\\w.-])))|(\\$STOMP_CONFIG|\\$\\{STOMP_CONFIG\\}|/\\.config/stomp|${options.configDir.replace(/\W/g, "\\$&")})(?![\\w.-])`);
 	const backends: [JudgeDecision["by"], (q: Question, signal?: AbortSignal) => Promise<Probabilities>][] = [];
 	if (options.jev) backends.push(["jev", (q, signal) => askJev(options.jev!, q, signal)]);
 	if (options.qwen) backends.push(["qwen", (q, signal) => askQwen(options.qwen!, q, signal)]);
 
 	/** Per segment: true when allowed, the rule when it must ask, undefined when no rule decides. */
-	function classify(seg: Segment, rules: { learned: string[]; ask: string[]; allow: string[] }, onMain: boolean): true | string | undefined {
+	function classify(seg: Segment, rules: { learned: string[]; ask: string[]; allow: string[] }, onMain: boolean, cwd: string): true | string | undefined {
 		const hit = (patterns: string[]) => patterns.find((p) => matches(p, seg));
 		// Brian's "always" beats every ask rule for that command; his own rules beat the built-in ones.
 		if (hit(rules.learned)) return true;
@@ -258,7 +258,7 @@ export function createJudge(options: JudgeOptions) {
 		if (mine !== undefined || hit(rules.allow)) return mine ?? true;
 		if (seg.piped && /^(.*\/)?(ba|z|da|k)?sh$/.test(seg.argv[0] ?? "")) return "piped into a shell";
 		if (/credentials\.json|TYPESAFE_API_KEY|\/environ\b/.test(seg.text)) return "names a stomp secret";
-		if (own.test(seg.text)) return "stomp's own files";
+		if (own.test(seg.text) || seg.words.some((w) => w.includes("/") && own.test(resolve(cwd, w.replace(/^[^=/]*=/, ""))))) return "stomp's own files";
 		if (seg.argv[0] === "mcp") return matches("mcp ** --destructive **", seg) ? "destructive MCP tool" : matches("mcp ** --read-only **", seg) || undefined; // by annotation
 		return hit(ASK) ?? (seg.argv.length === 0 || (hit(ALLOW) && !seg.argv.some((w) => UNLESS[seg.argv[0]!]?.test(w))) ? true : undefined);
 	}
@@ -301,7 +301,7 @@ export function createJudge(options: JudgeOptions) {
 			const segs = segments(q.command);
 			const branch = () => execFileSync("git", ["-C", q.cwd, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8", stdio: "pipe" }).trim();
 			const onMain = /\bpush\b/.test(q.command) && (segs.some((s) => s.argv[0] === "git" && s.argv.some((w) => /^(switch|checkout|config)$/.test(w))) || /^(main|master)$/.test((() => { try { return branch(); } catch { return ""; } })()));
-			const judged = segs.map((seg) => [seg, classify(seg, rules, onMain)] as const);
+			const judged = segs.map((seg) => [seg, classify(seg, rules, onMain, q.cwd)] as const);
 			const rule = judged.find((j): j is [Segment, string] => typeof j[1] === "string")?.[1];
 			let read: Read = { outcome: "ask", by: "ask-rule", detail: rule, why: `rule: ${rule}` };
 			if (rule === undefined) read = judged.every(([, c]) => c === true) ? { outcome: "run", by: "allow-rule", why: "" } : await model(q, signal);
