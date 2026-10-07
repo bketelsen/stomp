@@ -25,7 +25,7 @@ export const teamSection = (agents: () => readonly AgentConfig[]) =>
 	section("team", () => {
 		const team = agents().filter((agent) => agent.role === "agent" && agent.error === undefined);
 		const roster = team.flatMap((agent) => [
-			`- ${agent.name} (id: ${agent.id}, ${agent.family})`,
+			`- ${agent.name} (id: ${agent.id}, ${agent.families.join(", ")})`,
 			...responsibilities(agent.instructions).map((line) => `  ${line}`),
 			...agent.duties.map((duty) => `  Duty ${dutyText(duty)}${duty.added ? " (you added it)" : ""}`),
 		]);

@@ -50,3 +50,26 @@ test("one desk per agent across restarts; agents answer and follow their files",
 	});
 	assert.equal(reloaded.threads.find((thread) => thread.id === alpha.id)!.title, "Alpha Prime");
 });
+
+test("an agent whose model is a list answers from the next model while the first is down", async (t) => {
+	const fx = fixture();
+	fx.agent("alpha", agentFile("Alpha", "[scripted/w1, scripted/w2]"));
+	let down = true;
+	const models = scriptedModels((r) => (down && r.model === "w1" ? { error: "connect ECONNREFUSED" } : { text: `from ${r.model}` }), ["w1", "w2"]);
+	const stomp = await startStomp({ configDir: fx.configDir, stateDir: fx.stateDir, listen: "127.0.0.1:0", models });
+	t.after(async () => {
+		await stomp.close();
+		fx.cleanup();
+	});
+	t.mock.method(console, "error", () => {});
+	const [agent] = (await stomp.state()).agents;
+	assert.deepEqual([agent!.error, agent!.provider, agent!.family], [undefined, "fallback", "test"]);
+	const alpha = (await stomp.harness.conversation(agent!.deskThread as ConversationId, ctx))!;
+	const say = async (content: string) => {
+		await (await alpha.submit({ type: "input", content }, ctx)).wait(ctx);
+		return JSON.stringify((await alpha.entries({}, 1, undefined, ctx)).items[0]!.model);
+	};
+	assert.match(await say("hi"), /from w2/);
+	down = false;
+	assert.match(await say("again"), /from w1/);
+});

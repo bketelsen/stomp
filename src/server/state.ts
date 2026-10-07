@@ -104,7 +104,7 @@ export async function watchState(
 				model: agent.model,
 				provider: agent.provider,
 				modelId: agent.modelId,
-				family: agent.family,
+				family: agent.families.join(", "),
 				role: agent.role,
 				// 0 when the agent has never loaded cleanly, so it has no desk yet.
 				deskThread: own.find((thread) => thread.desk)?.id ?? 0,
