@@ -11,6 +11,8 @@ import { familyOf } from "./family.ts";
 export type AgentConfig = {
 	id: string;
 	name: string;
+	/** The frontmatter's `title`: a few words on what the agent is for, shown beside its name. */
+	title?: string;
 	/** As written in the file: an alias or `provider/modelId`. */
 	model: string;
 	provider: string;
@@ -116,6 +118,7 @@ export function parseAgent(id: string, text: string, house: string, context: Age
 		agent.name = /^#[ \t]+(.+)$/m.exec(body)?.[1]!.trim() ?? id;
 		agent.instructions = house ? `${house}\n\n${body}` : body;
 		agent.model = typeof meta.model === "string" ? meta.model : "";
+		if (typeof meta.title === "string" && meta.title.trim()) agent.title = meta.title.trim();
 		if (meta.role !== undefined && meta.role !== "agent" && meta.role !== "supervisor") {
 			throw new Error(`role must be agent or supervisor, not "${meta.role}"`);
 		}

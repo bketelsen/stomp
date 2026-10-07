@@ -92,6 +92,7 @@ export async function watchState(
 				...(delegation === undefined ? {} : { delegation }),
 				...(t.repo === undefined ? {} : { repo: t.repo, branch: t.branch! }),
 				...(t.review === undefined ? {} : { review: t.review }),
+				...(t.archived ? { archived: true as const } : {}),
 			};
 		});
 		const agentInfos: AgentInfo[] = agents().map((agent) => {
@@ -99,6 +100,7 @@ export async function watchState(
 			return {
 				id: agent.id,
 				name: agent.name,
+				...(agent.title === undefined ? {} : { title: agent.title }),
 				model: agent.model,
 				provider: agent.provider,
 				modelId: agent.modelId,

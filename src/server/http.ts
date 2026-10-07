@@ -14,6 +14,8 @@ export type Api = {
 	newThread(agent: string, title: string): Promise<number>;
 	/** Stop everything working for a thread: its delegation, its review, its run. */
 	stop(id: number): Promise<void>;
+	/** Archive a thread or bring it back; a 404 for an unknown thread, a 409 for a desk. */
+	archive(id: number, archived: boolean): Promise<void>;
 	/** Brian's answer to an ask; throws a 404 for an unknown or expired id. */
 	answer(id: string, answer: AskAnswer): void;
 	/** The judge's latest decisions, newest first. */
@@ -99,6 +101,12 @@ async function route(api: Api, req: IncomingMessage, res: ServerResponse, url: U
 		const whenBusy = body.mode === "steer" ? "steer" : "followUp";
 		const submission = await conversation.submit({ type: "input", content: body.text, whenBusy }, ctx);
 		return json(res, 200, { submission: String(submission.id) });
+	}
+	if (action === "archive" && method === "POST") {
+		const { archived } = await readBody(req);
+		if (typeof archived !== "boolean") throw new HttpError(400, "archived must be true or false");
+		await api.archive(Number(id), archived);
+		return json(res, 200, {});
 	}
 	if (action === "abort" && method === "POST") {
 		await api.stop(Number(id));

@@ -28,7 +28,7 @@ import { notebooks } from "./notebook.ts";
 import { checkPool, reviewPool, stompReview } from "./review.ts";
 import { watchState } from "./state.ts";
 import { stompSupervisor } from "./supervisor.ts";
-import { createThread, listThreads, syncThreads } from "./threads.ts";
+import { createThread, listThreads, syncThreads, ThreadsDoc } from "./threads.ts";
 import { workspaces, workspaceTool } from "./workspace.ts";
 import { attachBridge } from "./ws.ts";
 
@@ -191,6 +191,15 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 		async stop(id) {
 			await api.thread(id);
 			await stopThread(harness, id, ctx);
+		},
+		async archive(id, archived) {
+			await harness.commit(async (tx) => {
+				const row = (await tx.doc(ThreadsDoc)).threads[id];
+				if (row === undefined) throw new HttpError(404, `no thread ${id}`);
+				if (row.desk) throw new HttpError(409, "a desk can't be archived");
+				if (archived) row.archived = true;
+				else delete row.archived;
+			}, ctx);
 		},
 		answer(id, answer) {
 			if (!asks.answer(id, answer)) throw new HttpError(404, `no ask ${id}`);

@@ -1,5 +1,6 @@
 ---
 model: claude-sonnet
+title: Research          # a few words beside the name in the rail
 # Duties: checks stomp runs on a schedule (every: 5m or more). It wakes the agent with the brief and the
 # check's output when the output changed (wake: changed, the default), the check failed, or always.
 # Without a check, it wakes the agent every time.

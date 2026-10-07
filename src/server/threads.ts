@@ -22,6 +22,8 @@ type Plain<T> = { [K in keyof T]: T[K] extends (infer U)[] ? Plain<U>[] : T[K] }
 export type ThreadRecord = { agent: string; title: string; desk: boolean; createdAt: number; delegatedBy?: number } & Partial<Binding> & {
 	/** The HEAD a Review was last started for: one attempt per commit, even if that Review faults. */
 	requested?: string;
+	/** Brian put it away: the UI lists it under its agent's archived threads. */
+	archived?: boolean;
 	review?: Plain<ReviewRecord>;
 };
 
