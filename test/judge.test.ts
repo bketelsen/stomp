@@ -246,6 +246,27 @@ test("stomp's own files, executing awk and sed, curl config files and rm with op
 	for (const command of runs) assert.equal(await outcome(j, command), "run allow-rule", command);
 });
 
+// Found by cross-family review of #5: an agent's cwd is in the state dir, so `../..` from it reached stomp's secrets and rules.
+test("relative paths to stomp's own files ask, from an agent's scratch dir or worktree", async () => {
+	const j = judge();
+	for (const cwd of [join(fx.stateDir, "scratch", "teg"), join(fx.stateDir, "work", "teg-1")]) {
+		const decided = async (command: string) => ((v) => `${v.outcome} ${v.by} ${v.why}`)(await j.decide({ command, cwd, agent: "teg", thread: 1 }));
+		const asks = [
+			"cat ../../env",
+			`echo "allow: ['re:.']" >> "../../allowed.yaml"`,
+			"cat ../../token",
+			"ls ../..",
+			"cd ../.. && cat env",
+			"cat ../../e*",
+			"cp x ../teg/../../allowed.yaml",
+			"sort --output=../../allowed.yaml x",
+		];
+		for (const command of asks) assert.equal(await decided(command), "ask ask-rule rule: stomp's own files", `${command} from ${cwd}`);
+		const runs = ["go test ./... && ls .. ../../work ../../repos/x", "cat ../lucilla/notes.txt > ../../scratch/teg/x", "git worktree add ../wt-review stomp/teg/x"];
+		for (const command of runs) assert.equal(await decided(command), "run allow-rule ", `${command} from ${cwd}`);
+	}
+});
+
 test("MCP calls: the JSON is one word, read-only runs, destructive asks, unmarked needs a model, and Brian's rules come first", async (t) => {
 	const j = judge();
 	const args = `'{"name":"it'\\''s; gh pr merge 1 | sh"}'`;

@@ -179,8 +179,8 @@ Your own judge rules go in `~/.config/stomp/rules.yaml`. See [examples/home](exa
   careful new teammate.
 - **The API token keeps agents' curl out, not a determined agent.** Agents run as stomp's user, so
   one that goes digging through stomp's files can find it. The judge asks when a command names them
-  by full path or `$STOMP_STATE`, but not yet for a relative path like `../../token` from an agent's
-  scratch directory.
+  by full path, `$STOMP_STATE` or a relative path like `../../token`, but `cd ..; cd ..; cat token`,
+  a glob or a script still gets there.
 - **Your GitHub login in the VM can't tell agents from you.** A push to `main` and `gh pr merge` ask
   you through the judge, not through GitHub. Branch rulesets don't stop an admin's token.
 - **Claude Pro/Max through pi-ai is a gray area.** pi-ai's Claude login presents itself as Claude
