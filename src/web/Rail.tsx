@@ -82,9 +82,10 @@ function Agent({ agent, threads, current, notebook }: { agent: AgentInfo; thread
 	const [stored, setStored] = useState(false);
 	const unread = useStore((s) => s.unread);
 	const folded = useStore((s) => s.collapsed.includes(agent.id));
-	const shown = (t: ThreadInfo) => !t.archived || t.id === current || t.status === "needs-you" || unread.includes(t.id);
-	const active = threads.filter(shown);
-	const archived = threads.filter((t) => !shown(t));
+	// Found by review: past the first few, or archived, a thread still shows while it's open, needs Brian or has news.
+	const keep = (t: ThreadInfo) => t.id === current || t.status === "needs-you" || unread.includes(t.id);
+	const active = threads.filter((t) => !t.archived || keep(t));
+	const archived = threads.filter((t) => t.archived && !keep(t));
 	const fold = (
 		<button
 			type="button"
@@ -135,7 +136,7 @@ function Agent({ agent, threads, current, notebook }: { agent: AgentInfo; thread
 			</div>
 			{!folded && (
 				<div className="flex flex-col pl-6">
-					{active.filter((t, i) => all || i < SHOWN || unread.includes(t.id)).map((thread) => (
+					{active.filter((t, i) => all || i < SHOWN || keep(t)).map((thread) => (
 						<Row key={thread.id} thread={thread} current={thread.id === current} unread={unread.includes(thread.id)} />
 					))}
 					{active.length > SHOWN && (
