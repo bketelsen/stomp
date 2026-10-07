@@ -49,7 +49,7 @@ async function startNotes(t: TestContext) {
 		say: async (id: number, text: string) => (await (await conversation(id)).submit({ type: "input", content: text }, ctx)).wait(ctx),
 		results: async (id: number) => (await messages(id)).filter((m) => m.role === "toolResult").map((m) => [textOf(m), m.role === "toolResult" && m.isError]),
 		api: (path: string, method = "GET", body?: unknown) =>
-			fetch(`${stomp.url}/api/${path}`, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }),
+			fx.fetch(`${stomp.url}/api/${path}`, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }),
 		/** Consult copies: conversations owned by tool calls in thread `id`. */
 		copies: (id: number) => stomp.harness.commit(async (tx) => (await tx.scanConversations({ ownerConversationId: id as ConversationId }, 10)).items, ctx),
 		messages,

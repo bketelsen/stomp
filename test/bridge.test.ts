@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 import { applyImmutable, type Op } from "@earendil-works/chord/delta";
 import { WebSocket } from "ws";
 import type { ConversationView, ServerMessage } from "../src/shared/protocol.ts";
+import { UNAUTHORIZED } from "../src/server/http.ts";
 import { startStomp } from "../src/server/stomp.ts";
 import { agentFile, fixture, until } from "./support/fixture.ts";
 import { scriptedModels } from "./support/scripted.ts";
@@ -18,12 +21,13 @@ test("bridge: state, base then ops, REST commands and entries paging", async (t)
 		fx.cleanup();
 	});
 	const call = async (method: string, path: string, body?: unknown) => {
-		const res = await fetch(stomp.url + path, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+		const res = await fx.fetch(stomp.url + path, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 		return { status: res.status, body: (await res.json()) as Record<string, unknown> };
 	};
 
 	const received: ServerMessage[] = [];
-	const ws = new WebSocket(`${stomp.url.replace("http", "ws")}/api/ws`);
+	const token = readFileSync(join(fx.stateDir, "token"), "utf8").trim();
+	const ws = new WebSocket(`${stomp.url.replace("http", "ws")}/api/ws?token=${token}`);
 	ws.on("message", (raw) => received.push(JSON.parse(String(raw)) as ServerMessage));
 	const first = await until(() => received.find((m) => m.type === "state"));
 	const desk = first.state.agents.find((a) => a.id === "alpha")!.deskThread;
@@ -68,4 +72,12 @@ test("bridge: state, base then ops, REST commands and entries paging", async (t)
 	assert.equal((await call("GET", "/api/threads/999/entries")).status, 404);
 	assert.deepEqual(await call("POST", `/api/threads/${desk}/abort`), { status: 200, body: {} });
 	assert.match(await (await fetch(`${stomp.url}/some/spa/route`)).text(), /npm run build|<!doctype html>/i);
+
+	// Without the token the page still loads, but the API answers 401 and the WebSocket closes with why.
+	assert.deepEqual([(await fetch(`${stomp.url}/api/state`)).status, await (await fetch(`${stomp.url}/api/state?token=nope`)).json()], [401, { error: UNAUTHORIZED }]);
+	const refused = new WebSocket(`${stomp.url.replace("http", "ws")}/api/ws?token=${token.slice(1)}`);
+	const frames: unknown[] = [];
+	refused.on("message", (raw) => frames.push(raw));
+	const closed = await new Promise<[number, string]>((resolve) => refused.on("close", (code, reason) => resolve([code, String(reason)])));
+	assert.deepEqual([closed, frames], [[4401, UNAUTHORIZED], []]);
 });

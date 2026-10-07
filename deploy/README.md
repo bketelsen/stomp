@@ -1,8 +1,8 @@
 # Deploying stomp
 
 stomp runs in a local Incus VM, `stomp-dev`, as the systemd user unit `stomp.service` of the VM's
-`stomp` account. Inside the VM it listens on 127.0.0.1:7310. On the desktop, open
-http://127.0.0.1:7311.
+`stomp` account. Inside the VM it listens on 127.0.0.1:7310. On the desktop, `deploy/vm.sh open`
+opens http://127.0.0.1:7311 with stomp's API token, which the browser keeps.
 
 A systemd socket on the desktop (`stomp-dev-web.socket`) tunnels each connection through
 `incus exec … socat`, because Incus proxy devices on VMs are NAT-only. Nothing runs while it's idle.
@@ -13,6 +13,7 @@ deploy/vm.sh config              # copy ~/.config/stomp in (no secrets live ther
 deploy/vm.sh update              # see what an update would do
 deploy/vm.sh update --apply      # push this working tree, build, restart
 deploy/vm.sh login <provider>    # github-copilot | openai | anthropic
+deploy/vm.sh open                # open stomp in your browser, with its token
 deploy/vm.sh status | logs | shell
 deploy/vm.sh destroy --yes       # also deletes the VM's credentials
 ```
@@ -21,4 +22,6 @@ deploy/vm.sh destroy --yes       # also deletes the VM's credentials
   browser ends on a page that won't load; paste that page's URL back into the terminal.
 - **Updates** build in `~stomp/stomp.next` and swap only on success, so a failed build leaves the old
   version running. The previous deploy stays in `~stomp/stomp.prev`.
+- **The token** is in `~stomp/.local/share/stomp/token`. Agents run as `stomp` too and can reach port
+  7310, so the API refuses requests without it. Delete the file and restart stomp to change it.
 - **Where things live:** state in `~stomp/.local/share/stomp`, code in `~stomp/stomp`.

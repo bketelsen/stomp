@@ -1,5 +1,6 @@
 // One process: one Harness over one SQLite file, the agent files, HTTP and the WebSocket bridge.
-import { mkdirSync, watch } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -77,6 +78,10 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 	const dutiesFile = join(options.stateDir, "duties.yaml");
 	mkdirSync(scratch, { recursive: true, mode: 0o700 });
 	mkdirSync(join(options.configDir, "agents"), { recursive: true });
+	// The API's token, made once per install. `deploy/vm.sh open` reads it to open Brian's browser.
+	const tokenFile = join(options.stateDir, "token");
+	if (!readOptional(tokenFile).trim()) writeFileSync(tokenFile, `${randomBytes(32).toString("base64url")}\n`, { mode: 0o600 });
+	const token = readFileSync(tokenFile, "utf8").trim();
 	const credentials = new FileCredentialStore(join(options.stateDir, "credentials.json"));
 	const models = options.models ?? (await buildModels(config, credentials));
 	const family = (modelId: string) => familyOf(modelId, config.families);
@@ -236,7 +241,7 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 		watch(options.stateDir, (_event, file) => file === "duties.yaml" && changed()),
 	];
 
-	const server = createServer(httpHandler(api, options.webDir ?? WEB_DIR));
+	const server = createServer(httpHandler(api, options.webDir ?? WEB_DIR, token));
 	const listen = options.listen ?? config.listen;
 	const colon = listen.lastIndexOf(":");
 	const host = listen.slice(0, colon).replace(/^\[|\]$/g, "") || "127.0.0.1";
@@ -245,7 +250,7 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 		server.listen(Number(listen.slice(colon + 1)), host, resolve);
 	});
 	const { port } = server.address() as AddressInfo;
-	const wss = attachBridge(server, api, state);
+	const wss = attachBridge(server, api, state, token);
 
 	let closing: Promise<void> | undefined;
 	return {

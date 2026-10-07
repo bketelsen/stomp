@@ -115,9 +115,9 @@ async function startReviewed(t: TestContext, pool = "[scripted/claude-r, scripte
 		},
 		userTexts,
 		conversation,
-		abort: (id: number) => fetch(`${stomp.url}/api/threads/${id}/abort`, { method: "POST" }),
+		abort: (id: number) => fx.fetch(`${stomp.url}/api/threads/${id}/abort`, { method: "POST" }),
 		ask: () => until(async () => (await stomp.state()).asks[0]),
-		answer: (id: string, body: unknown) => fetch(`${stomp.url}/api/asks/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(body) }),
+		answer: (id: string, body: unknown) => fx.fetch(`${stomp.url}/api/asks/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(body) }),
 		async restart() {
 			await stomp.close();
 			stomp = await open();

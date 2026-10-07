@@ -149,7 +149,8 @@ deploy/vm.sh login github-copilot         # or openai, anthropic; run in the VM,
 deploy/vm.sh secret TYPESAFE_API_KEY      # optional: the judge's key, read silently
 ```
 
-Then open http://127.0.0.1:7311. To let agents push branches and open PRs, run
+Then run `deploy/vm.sh open`, which opens http://127.0.0.1:7311 with stomp's API token; your browser
+keeps it. To let agents push branches and open PRs, run
 `deploy/vm.sh login github`. [deploy/README.md](deploy/README.md) has the details.
 
 **On your own machine,** to try it, knowing agents get your shell:
@@ -158,7 +159,8 @@ Then open http://127.0.0.1:7311. To let agents push branches and open PRs, run
 npm install && npm run build
 cp -r examples/home ~/.config/stomp
 npm run login github-copilot
-npm start                                 # http://127.0.0.1:7310
+npm start
+xdg-open "http://127.0.0.1:7310/#token=$(cat ~/.local/share/stomp/token)"   # once per browser
 ```
 
 **Configuration,** in `~/.config/stomp/stomp.yaml`:
@@ -175,6 +177,10 @@ Your own judge rules go in `~/.config/stomp/rules.yaml`. See [examples/home](exa
 - **The judge is a safety net, not a sandbox.** An agent that writes a script and runs `npm test`
   runs whatever it wrote. Only the VM contains that. Give the VM only the credentials you'd hand a
   careful new teammate.
+- **The API token keeps agents' curl out, not a determined agent.** Agents run as stomp's user, so
+  one that goes digging through stomp's files can find it. The judge asks when a command names them
+  by full path or `$STOMP_STATE`, but not yet for a relative path like `../../token` from an agent's
+  scratch directory.
 - **Your GitHub login in the VM can't tell agents from you.** A push to `main` and `gh pr merge` ask
   you through the judge, not through GitHub. Branch rulesets don't stop an admin's token.
 - **Claude Pro/Max through pi-ai is a gray area.** pi-ai's Claude login presents itself as Claude

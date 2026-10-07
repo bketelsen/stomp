@@ -347,7 +347,9 @@ surface (MIT, OpenChamber styles).
     `applyImmutable` from `@earendil-works/chord/delta`. The spike measured 6 KB per reply on a
     150-turn thread, against 20 MB for whole views.
   - Older history comes from `conv.entries()`, paged. `viewState` holds only the active context.
-- **Access.** Binds to 127.0.0.1; `tailscale serve` provides access and identity. No login system.
+- **Access.** Binds to 127.0.0.1; `tailscale serve` provides access and identity. No login system,
+  but the API wants the per-install token in `$STOMP_STATE/token`: agents' shells share stomp's user
+  and port, and without it an agent's curl could answer its own ask.
 
 ## pi-durable: what we use, what we build
 

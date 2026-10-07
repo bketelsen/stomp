@@ -49,7 +49,7 @@ async function startDuty(t: TestContext, duty: string, boss = true) {
 		say: async (thread: number, text: string) =>
 			(await (await stomp.harness.conversation(thread as ConversationId, ctx))!.submit({ type: "input", content: text }, ctx)).wait(ctx),
 		ask: () => until(async () => (await stomp.state()).asks[0]),
-		answer: async (id: string, body: unknown) => (await fetch(`${stomp.url}/api/asks/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(body) })).status,
+		answer: async (id: string, body: unknown) => (await fx.fetch(`${stomp.url}/api/asks/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(body) })).status,
 		duties: async () => (await stomp.state()).agents.find((a) => a.id === "alpha")!.duties,
 		write: (file: string, text: string) => writeFileSync(join(cwd, file), text),
 		duty: async () => (await stomp.state()).agents.find((a) => a.id === "alpha")!.duties[0]!,
