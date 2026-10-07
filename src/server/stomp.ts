@@ -131,8 +131,11 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 	const registry = createRegistry();
 	for (const extension of [coding, supervisor, common, consult.extension]) registry.install(extension);
 	if (review) registry.install(review.extension);
+	// Agents' shells don't inherit the server's secrets, and MCP results never carry their values.
+	const shellEnv = hiddenEnv(options.stateDir);
+	const secretValues = Object.keys(shellEnv).flatMap((name) => (process.env[name]?.length ?? 0) >= 8 ? [process.env[name]!] : []);
 	const mcp = stompMcp(config.mcp, {
-		taken: new Set(registry.snapshot().tools().map(({ tool }) => tool.name)),
+		redact: (text) => secretValues.reduce((out, value) => out.replaceAll(value, "[redacted]"), text),
 		timeoutMs: config.bash.timeoutSeconds * 1000,
 		guard: (judged) => stompGuard(judge, asks, () => harness, judged),
 		install: (extension) => registry.install(extension),
@@ -141,8 +144,6 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 	let agents = load();
 	if (config.review) checkPool(pool, agents);
 	const storage = await openNodeSqliteStorage(join(options.stateDir, "stomp.sqlite"));
-	// Agents' shells don't inherit the server's secrets.
-	const shellEnv = hiddenEnv(options.stateDir);
 	const env = (cwd: string | undefined) => new NodeExecutionEnv({ cwd: cwd ?? scratch, shellEnv });
 	const harness = await Harness.open(
 		storage,

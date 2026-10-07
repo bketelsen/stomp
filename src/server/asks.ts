@@ -89,7 +89,9 @@ async function placeOf(api: HookApi, harness: () => Harness, c: Context): Promis
 /** A file tool's `path` (`~` expanded, `@` dropped as pi-durable does) is in stomp's own files, resolved from the call's cwd. */
 async function ownFile(judge: Judge, api: HookApi, path: string, c: Context): Promise<boolean> {
 	const cwd = (await api.snapshot(AgentDoc, api.conversationId, c))?.cwd ?? "";
-	return judge.own(resolve(cwd, path.replace(/^@/, "").replace(/^~(?=\/|$)/, homedir())));
+	const full = resolve(cwd, path.replace(/^@/, "").replace(/^~(?=\/|$)/, homedir()));
+	// A process's environment holds the server's and MCP servers' secrets.
+	return /^\/proc\/[^/]+\/environ$/.test(full) || judge.own(full);
 }
 
 const bash: Judged = (name, args) => (name === "bash" ? String(args.command ?? "") : undefined);

@@ -1,8 +1,10 @@
 // MCP servers (stomp.yaml's `mcp`): one stdio process each, started with stomp and given the server's environment plus
 // `env`, so secrets reach them and never agents' shells. Each is an extension, mcp-<name>, for the agents whose files
 // list it: a tool per MCP tool, and the guard, which judges a call as the command
-// `mcp <server> <tool> [--read-only|--destructive] '<args as JSON>'`, marked from the tool's annotations. A call that
-// finds its server gone starts it again, once, and re-lists its tools.
+// `mcp <server> <tool> [--read-only|--destructive] '<args as JSON>'`, marked from the tool's annotations. Tools are
+// named <server>_<tool> unless already so prefixed, so no two servers' tools share a name. A call that finds its server
+// gone starts it again, once, and re-lists its tools; if that changed the tool's annotations, the call isn't made, so
+// its retry is judged afresh. Secret values never come back in results or errors.
 import type { Context } from "@earendil-works/chord";
 import { defineExtension, defineTool, type Extension, type HookRegistration } from "@earendil-works/pi-durable";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -13,7 +15,7 @@ import type { StompConfig } from "./config.ts";
 
 /** A guard's command for a call, or undefined for a call it doesn't judge. */
 export type Judged = (name: string, args: Record<string, unknown>) => string | undefined;
-type Server = { client?: Client; starting?: Promise<Client>; error?: string; extension: Extension };
+type Server = { client?: Client; starting?: Promise<Client>; error?: string; extension: Extension; tools?: Map<string, Tool> };
 
 const CAP = 50_000;
 const START_MS = 15_000;
@@ -25,8 +27,8 @@ const textOf = (content: ContentBlock[]) =>
 	content.map((c) => (c.type === "text" ? c.text : `[${c.type} ${c.type === "resource" ? c.resource.uri : c.type === "resource_link" ? c.uri : c.mimeType}]`)).join("\n");
 
 export type McpHost = {
-	/** stomp's own tool names: an MCP tool with one of them is called <server>_<name>. */
-	taken: ReadonlySet<string>;
+	/** Text with every secret value replaced. */
+	redact(text: string): string;
 	/** How long a call may take: bash's timeout. */
 	timeoutMs: number;
 	guard(judged: Judged): HookRegistration;
@@ -39,7 +41,7 @@ export function stompMcp(config: StompConfig["mcp"], host: McpHost) {
 
 	/** One extension per tool list: its guard knows exactly its tools, so a phase's tools and guard agree. */
 	function extensionOf(server: string, listed: Tool[]): Extension {
-		const named = new Map(listed.map((t) => [host.taken.has(t.name) ? `${server}_${t.name}` : t.name, t]));
+		const named = new Map(listed.map((t) => [t.name.startsWith(`${server}_`) ? t.name : `${server}_${t.name}`, t]));
 		const judged: Judged = (name, args) => {
 			const t = named.get(name);
 			return t && `mcp ${server} ${t.name}${marker(t)} ${quote(JSON.stringify(args))}`;
@@ -47,20 +49,22 @@ export function stompMcp(config: StompConfig["mcp"], host: McpHost) {
 		const tools = [...named].map(([name, t]) => {
 			const { $schema: _, ...schema } = t.inputSchema;
 			const parameters = Type.Unsafe<Record<string, unknown>>(schema);
-			return defineTool({ name, description: t.description ?? t.title ?? t.name, parameters, execute: (args, _api, c) => call(server, t.name, args, c) });
+			return defineTool({ name, description: t.description ?? t.title ?? t.name, parameters, execute: (args, _api, c) => call(server, t, args, c) });
 		});
 		return defineExtension({ name: `mcp-${server}`, tools, hooks: [host.guard(judged)] }) as Extension;
 	}
 
-	async function call(server: string, tool: string, args: Record<string, unknown>, c: Context) {
+	async function call(server: string, judged: Tool, args: Record<string, unknown>, c: Context) {
 		try {
 			const client = await running(server);
-			const result = await client.callTool({ name: tool, arguments: args }, undefined, { timeout: host.timeoutMs, signal: c.abortSignal });
-			const text = textOf((result.content ?? []) as ContentBlock[]);
+			const fresh = servers.get(server)!.tools?.get(judged.name);
+			if (fresh === undefined || marker(fresh) !== marker(judged)) return reply(`mcp ${server}: ${judged.name} changed when the server restarted; call it again`, true);
+			const result = await client.callTool({ name: judged.name, arguments: args }, undefined, { timeout: host.timeoutMs, signal: c.abortSignal });
+			const text = host.redact(textOf((result.content ?? []) as ContentBlock[]));
 			return reply(text.length > CAP ? `${text.slice(0, CAP)}\n[cut: ${text.length - CAP} more characters]` : text, result.isError === true);
 		} catch (error) {
 			c.abortSignal?.throwIfAborted();
-			return reply(`mcp ${server}: ${(error as Error).message}`, true);
+			return reply(host.redact(`mcp ${server}: ${(error as Error).message}`), true);
 		}
 	}
 
@@ -80,7 +84,7 @@ export function stompMcp(config: StompConfig["mcp"], host: McpHost) {
 			let page = await client.listTools({}, { timeout: START_MS });
 			const listed = [...page.tools];
 			while (page.nextCursor) listed.push(...(page = await client.listTools({ cursor: page.nextCursor }, { timeout: START_MS })).tools);
-			Object.assign(server, { client, error: undefined, extension: extensionOf(name, listed) });
+			Object.assign(server, { client, error: undefined, tools: new Map(listed.map((t) => [t.name, t])), extension: extensionOf(name, listed) });
 			host.install(server.extension);
 			console.log(`[stomp] mcp: ${name} (${listed.length} tools)`);
 			return client;
