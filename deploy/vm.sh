@@ -3,8 +3,9 @@
 #
 #   deploy/vm.sh create            create and provision the VM; safe to re-run
 #   deploy/vm.sh update [--apply]  say what an update does; --apply pushes this working tree, runs
-#                                  npm ci and npm run build in the VM, installs the unit, restarts stomp
-#   deploy/vm.sh config            copy ~/.config/stomp into the VM (no secrets live there)
+#                                  npm ci and npm run build in the VM, copies ~/.config/stomp in,
+#                                  installs the unit, restarts stomp
+#   deploy/vm.sh config            copy ~/.config/stomp into the VM (no secrets live there), restart stomp
 #   deploy/vm.sh open              open stomp in your browser with its API token, which the browser keeps;
 #                                  once per browser
 #   deploy/vm.sh login <provider>  github-copilot | openai | anthropic, as the VM's stomp user; you
@@ -123,6 +124,13 @@ EOF
   systemctl --user restart "$name-web.socket"
 }
 
+# ~/.config/stomp over the VM's copy, less git and secrets.
+push_config() {
+  [ -d ~/.config/stomp ] || { echo "no ~/.config/stomp here; start from: cp -r $repo/examples/home ~/.config/stomp" >&2; exit 1; }
+  tar -C ~/.config/stomp --exclude=.git --exclude=credentials.json --exclude='.env*' -cz . |
+    as_stomp 'mkdir -p ~/.config/stomp && tar -xzv -C ~/.config/stomp'
+}
+
 update() {
   local rev size deployed
   rev="$(git -C "$repo" rev-parse --abbrev-ref HEAD)@$(git -C "$repo" rev-parse --short HEAD)"
@@ -132,14 +140,18 @@ update() {
   echo "update $name from $repo"
   echo "  now:  ${deployed:-nothing deployed}"
   echo "  push: $(tree | tr -cd '\0' | wc -c) files ($((size / 1024)) KiB gz) from $rev"
-  echo "  then: npm ci and npm run build in ~stomp/stomp.next, swap it in as ~stomp/stomp (the old one"
-  echo "        stays as ~stomp/stomp.prev), install deploy/stomp.service as a user unit, restart stomp"
+  echo "  then: npm ci and npm run build in ~stomp/stomp.next, copy ~/.config/stomp in, swap the build in"
+  echo "        as ~stomp/stomp (the old one stays as ~stomp/stomp.prev), install deploy/stomp.service as a"
+  echo "        user unit, restart stomp"
   if [ "${1:-}" != --apply ]; then echo "dry run: nothing changed; re-run with --apply"; return; fi
 
   tree | tar -C "$repo" --null -T - -cz |
     as_stomp 'rm -rf ~/stomp.next && mkdir ~/stomp.next && tar -xz -C ~/stomp.next'
   as_stomp "set -e; cd ~/stomp.next; npm ci --no-audit --no-fund; npm run build
-    echo $(printf %q "$rev, pushed $(date -Iseconds)") >DEPLOYED; cd; rm -rf stomp.prev; [ ! -d stomp ] || mv stomp stomp.prev; mv stomp.next stomp
+    echo $(printf %q "$rev, pushed $(date -Iseconds)") >DEPLOYED"
+  # After the build, so a failed one leaves the old code with the old config.
+  push_config
+  as_stomp "set -e; rm -rf stomp.prev; [ ! -d stomp ] || mv stomp stomp.prev; mv stomp.next stomp
     mkdir -p ~/.config/systemd/user; cp stomp/deploy/stomp.service ~/.config/systemd/user/
     systemctl --user daemon-reload; systemctl --user enable -q stomp; systemctl --user restart stomp"
   sleep 3
@@ -157,10 +169,8 @@ case ${1:-} in
   create) create ;;
   update) update "${2:-}" ;;
   config)
-    [ -d ~/.config/stomp ] || { echo "no ~/.config/stomp here; start from: cp -r $repo/examples/home ~/.config/stomp" >&2; exit 1; }
-    tar -C ~/.config/stomp --exclude=.git --exclude=credentials.json --exclude='.env*' -cz . |
-      as_stomp 'mkdir -p ~/.config/stomp && tar -xzv -C ~/.config/stomp
-      systemctl --user try-restart stomp 2>/dev/null || true'
+    push_config
+    as_stomp 'systemctl --user try-restart stomp 2>/dev/null || true'
     ;;
   open)
     # In the fragment, which never reaches a server; the page keeps the token and takes it out of the address bar.
