@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, type TestContext, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -21,15 +21,21 @@ process.env.NAS_SECRET = "nas-value";
 async function start(t: TestContext) {
 	const fx = fixture();
 	const log = join(fx.root, "mcp.log");
-	const fake = { command: process.execPath, args: [join(import.meta.dirname, "support", "mcp-server.ts")], env: { FAKE_LOG: log, FAKE_FLAG: join(fx.root, "tag-is-destructive") } };
+	const starts = join(fx.root, "starts.log");
+	const server = [join(import.meta.dirname, "support", "mcp-server.ts")];
+	const fake = { command: process.execPath, args: server, env: { FAKE_LOG: log, FAKE_FLAG: join(fx.root, "tag-is-destructive"), FAKE_STARTS: starts } };
 	const broken = { command: join(fx.root, "no-such-server") };
-	writeFileSync(join(fx.configDir, "stomp.yaml"), `families: { '^(w[0-9]|scripted)': test }\nmcp: ${JSON.stringify({ fake, broken })}\n`);
+	// Down at startup, like the NAS mid-upgrade, until a test removes $FAKE_DOWN.
+	const flaky = { command: process.execPath, args: server, env: { FAKE_LOG: log, FAKE_DOWN: join(fx.root, "down") } };
+	writeFileSync(join(fx.root, "down"), "");
+	writeFileSync(join(fx.configDir, "stomp.yaml"), `families: { '^(w[0-9]|scripted)': test }\nmcp: ${JSON.stringify({ fake, broken, flaky })}\n`);
 	mkdirSync(fx.stateDir, { recursive: true });
 	writeFileSync(join(fx.stateDir, "env"), "NAS_SECRET=nas-value\n");
 	fx.agent("alpha", agentFile("Alpha", "scripted/w1", "mcp: [fake]\n"));
 	fx.agent("beta", agentFile("Beta", "scripted/w2"));
 	fx.agent("gamma", agentFile("Gamma", "scripted/w2", "mcp: [nope]\n"));
 	fx.agent("delta", agentFile("Delta", "scripted/w2", "mcp: [broken]\n"));
+	fx.agent("epsilon", agentFile("Epsilon", "scripted/w3", "mcp: [flaky]\n"));
 	const seen: Record<string, string[]> = {};
 	const respond = (r: Request): Turn => {
 		seen[r.model] = r.tools;
@@ -38,7 +44,7 @@ async function start(t: TestContext) {
 		const command = /^run: (.*)/.exec(r.lastUserText)?.[1];
 		return call ? { calls: [[call[1]!, JSON.parse(call[2]!)]] } : command ? { bash: command } : { text: "hi" };
 	};
-	const stomp = await startStomp({ configDir: fx.configDir, stateDir: fx.stateDir, listen: "127.0.0.1:0", models: scriptedModels(respond, ["w1", "w2"]) });
+	const stomp = await startStomp({ configDir: fx.configDir, stateDir: fx.stateDir, listen: "127.0.0.1:0", models: scriptedModels(respond, ["w1", "w2", "w3"]) });
 	t.after(async () => {
 		await stomp.close();
 		fx.cleanup();
@@ -55,9 +61,9 @@ async function start(t: TestContext) {
 		say,
 		/** Alpha calls a tool; a call that asks holds the turn open. */
 		tool: (name: string, args: object) => say(alpha, `call: ${name} ${JSON.stringify(args)}`),
-		/** Alpha's latest tool result. */
-		last: async () =>
-			(await (await stomp.harness.conversation(alpha as ConversationId, ctx))!.entries({}, 200, undefined, ctx)).items
+		/** Alpha's (or another thread's) latest tool result. */
+		last: async (thread = alpha) =>
+			(await (await stomp.harness.conversation(thread as ConversationId, ctx))!.entries({}, 200, undefined, ctx)).items
 				.flatMap((e) => e.model ?? [])
 				.flatMap((m) => (m.role === "toolResult" ? [m.content.map((c) => ("text" in c ? c.text : "")).join("")] : []))[0]!,
 		ask: () => until(async () => (await stomp.state()).asks[0]),
@@ -65,6 +71,9 @@ async function start(t: TestContext) {
 		decision: async () => ((await (await fx.fetch(`${stomp.url}/api/judge?limit=1`)).json()) as { decisions: JudgeDecision[] }).decisions[0]!,
 		/** What reached the MCP server. */
 		logged: () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []),
+		/** How many times fake has started. */
+		started: () => (existsSync(starts) ? readFileSync(starts, "utf8").trim().split("\n").length : 0),
+		error: async (agent: string) => (await stomp.state()).agents.find((a) => a.id === agent)!.error,
 	};
 }
 
@@ -72,7 +81,7 @@ test("an agent whose file lists a server has its tools; others don't, and an unk
 	const s = await start(t);
 	const agents = (await s.state()).agents;
 	assert.equal(agents.find((a) => a.id === "gamma")!.error, 'unknown MCP server "nope"');
-	assert.match(agents.find((a) => a.id === "delta")!.error!, /^MCP server broken didn't start: .*ENOENT/);
+	assert.match(agents.find((a) => a.id === "delta")!.error!, /^MCP server broken didn't start \(.*ENOENT.*\); retrying$/);
 	await s.say(await s.desk("beta"), "hello");
 	await s.tool("fake_wipe", {});
 	assert.match(await s.last(), /Validation failed for tool "fake_wipe"[\s\S]*dataset/, "the tool has the server's schema");
@@ -122,6 +131,29 @@ test("a server that exits starts again on the next call, and agents' shells neve
 	await s.say(await s.desk("alpha"), "run: printenv NAS_SECRET; echo checked");
 	assert.match(await s.last(), /checked/);
 	assert.doesNotMatch(await s.last(), /nas-value/);
+});
+
+// Found in use: the NAS was mid-upgrade when stomp started, and its server stayed failed until stomp restarted.
+test("a server that fails at startup retries on its own, and its agents get their tools once it's up", async (t) => {
+	const s = await start(t);
+	assert.match((await s.error("epsilon"))!, /^MCP server flaky didn't start \(.*Connection closed\); retrying$/);
+	rmSync(join(s.fx.root, "down"));
+	await until(async () => (await s.error("epsilon")) === undefined);
+	const epsilon = await s.desk("epsilon");
+	await s.say(epsilon, 'call: flaky_read {"name":"HOME"}');
+	assert.match(await s.last(epsilon), /^HOME=/);
+	assert.ok(s.seen.w3!.includes("flaky_read"));
+});
+
+test("a server that exits mid-run starts again without waiting for a call", async (t) => {
+	const s = await start(t);
+	assert.equal(s.started(), 1);
+	await s.tool("fake_exit", {});
+	await until(() => s.started() === 2);
+	assert.equal(await s.error("alpha"), undefined);
+	await s.tool("fake_read", { name: "NAS_SECRET" });
+	assert.equal(await s.last(), "NAS_SECRET=[redacted]");
+	assert.equal(s.started(), 2, "the call found it running");
 });
 
 // Found by review: a file tool could read a process environment, which holds the server's and MCP servers' secrets.
