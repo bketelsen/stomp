@@ -105,6 +105,15 @@ test("remember adds a dated line that the agent's threads see; past the cap it a
 	assert.deepEqual(await (await n.api("agents/broken/notebook")).json(), { text: "" });
 });
 
+test("remember dates a note once: it adds today's date unless the note already starts with one", async (t) => {
+	const n = await startNotes(t);
+	const desk = await n.desk("alpha");
+	await n.say(desk, "remember the VM is devbox");
+	await n.say(desk, "remember 2026-01-02: the VM moved");
+	const { text } = (await (await n.api("agents/alpha/notebook")).json()) as { text: string };
+	assert.match(text, /^- \d{4}-\d{2}-\d{2}: the VM is devbox\n- 2026-01-02: the VM moved\n$/);
+});
+
 test("consult answers from a read-only copy of the other agent: its model, soul and notebook", async (t) => {
 	const n = await startNotes(t);
 	const desk = await n.desk("alpha");
