@@ -14,6 +14,10 @@ Environment=STOMP_CONFIG=%h/.config/stomp
 Environment=STOMP_STATE=%h/.local/share/stomp
 # Secrets such as TYPESAFE_API_KEY, written by `deploy/vm.sh secret NAME`. Optional.
 EnvironmentFile=-%h/.local/share/stomp/env
+# Wait for the network, so MCP servers and providers are reachable at boot. A user unit can't order itself
+# after the system's network-online.target (the user manager has its own units), and nothing in the VM pulls
+# that target in anyway, so ask systemd-networkd directly. "-": after 60s without a network, start regardless.
+ExecStartPre=-/usr/lib/systemd/systemd-networkd-wait-online --any --timeout=60
 ExecStart=%h/.local/share/mise/installs/node/24/bin/node src/server/main.ts
 # Agents' bash children must die with the service: on their own they survive even a kill -9 of node.
 KillMode=control-group
