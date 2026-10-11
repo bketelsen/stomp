@@ -1,12 +1,13 @@
 // The StateSnapshot, derived on demand from the agent files, `stomp.threads`, pi-durable's task graph and task records,
 // `pi.usage` and the in-memory asks. Nothing here is stored: a thread needs Brian while one of its commands waits for his
 // answer, else it's working exactly while a generation task of its conversation is live, reviewing while a Review task
-// of it is, and a delegation stands where its latest Delegation task does.
+// of it is, and a delegation stands where its latest Delegation task does. A thread's progress is what its live tasks
+// say of themselves, through the describer registered for their kind.
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { type Cursor, GenerationTask, type Harness, type TaskRecord } from "@earendil-works/pi-durable";
-import type { AgentInfo, DelegationStatus, ProviderUsage, StateSnapshot, ThreadInfo, ThreadStatus } from "../shared/protocol.ts";
+import type { AgentInfo, DelegationStatus, Progress, ProviderUsage, StateSnapshot, ThreadInfo, ThreadStatus } from "../shared/protocol.ts";
 import type { AgentConfig } from "./agents.ts";
 import type { Asks } from "./asks.ts";
 import { DELEGATION, type DelegationInput } from "./delegation.ts";
@@ -23,6 +24,9 @@ export type StateFeed = {
 	close(): void;
 };
 
+/** What a live task of one kind shows in its thread's progress strip, from its record; undefined shows nothing. */
+export type Describe = (task: { id: number; state: { checkpoint?: unknown } }) => Progress | undefined;
+
 const GENERATION = GenerationTask.definition.name;
 /** Task outcomes to delegation statuses; a live task is running, and faulted or orphaned ones failed. */
 const OUTCOMES: Record<string, DelegationStatus> = { completed: "reported", aborted: "cancelled" };
@@ -34,6 +38,7 @@ export async function watchState(
 	providerIds: readonly string[],
 	asks: Asks,
 	notes: Pick<Notebooks, "lines">,
+	describe: Readonly<Record<string, Describe>> = {},
 ): Promise<StateFeed> {
 	const graph = await harness.taskGraph(ctx);
 	const status = (thread: number): ThreadStatus => {
@@ -62,6 +67,18 @@ export async function watchState(
 		return latest;
 	}
 
+	/** Each thread's progress, from its live tasks that have a describer, oldest first. */
+	async function progress(): Promise<Map<number, Progress[]>> {
+		const byThread = new Map<number, Progress[]>();
+		const nodes = Object.values(graph.value.tasks).filter((node) => describe[node.kind] !== undefined);
+		for (const node of nodes.sort((a, b) => a.id - b.id)) {
+			const record = await harness.getTask(node.id, ctx);
+			const item = record && describe[node.kind]!(record);
+			if (item) byThread.set(node.conversationId, [...(byThread.get(node.conversationId) ?? []), item]);
+		}
+		return byThread;
+	}
+
 	/** Tokens per provider over every conversation's `pi.usage`; input includes cache reads and writes, like the UI. */
 	async function usage(): Promise<ProviderUsage[]> {
 		const byProvider = new Map<string, ProviderUsage>();
@@ -76,10 +93,12 @@ export async function watchState(
 	async function snapshot(): Promise<StateSnapshot> {
 		const records = await listThreads(harness);
 		const delegated = await delegations();
+		const under = await progress();
 		const duties = (await harness.snapshot(DutiesDoc, ctx))?.duties ?? {};
 		const byAgent = new Map(agents().map((agent) => [agent.id, agent]));
 		const threads: ThreadInfo[] = Object.entries(records).map(([id, t]) => {
 			const delegation = delegated.get(Number(id));
+			const items = under.get(Number(id));
 			return {
 				id: Number(id),
 				agent: t.agent,
@@ -92,6 +111,7 @@ export async function watchState(
 				...(delegation === undefined ? {} : { delegation }),
 				...(t.repo === undefined ? {} : { repo: t.repo, branch: t.branch! }),
 				...(t.review === undefined ? {} : { review: t.review }),
+				...(items === undefined ? {} : { progress: items }),
 				...(t.archived ? { archived: true as const } : {}),
 			};
 		});
@@ -138,7 +158,7 @@ export async function watchState(
 	};
 	const unsubscribe = harness.subscribeCommits(({ changes }) => {
 		const relevant = (c: (typeof changes)[number]) =>
-			(c.type === "task" && [GENERATION, DELEGATION, REVIEW].includes(c.value.kind)) ||
+			(c.type === "task" && [GENERATION, DELEGATION, REVIEW, ...Object.keys(describe)].includes(c.value.kind)) ||
 			(c.type === "document" && [ThreadsDoc.definition.kind, DutiesDoc.definition.kind].includes(c.record.kind));
 		if (changes.some(relevant)) changed();
 	});

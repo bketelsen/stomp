@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { JsonObject } from "@earendil-works/pi-ai";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import { REPORT_PREFIX, REVIEW_ENTRY } from "../src/shared/protocol.ts";
+import { WebSocket } from "ws";
+import { REPORT_PREFIX, REVIEW_ENTRY, type ServerMessage } from "../src/shared/protocol.ts";
 import type { AgentConfig } from "../src/server/agents.ts";
 import { checkPool, REVIEW } from "../src/server/review.ts";
 import { startStomp } from "../src/server/stomp.ts";
@@ -118,6 +119,15 @@ async function startReviewed(t: TestContext, pool = "[scripted/claude-r, scripte
 		},
 		userTexts,
 		conversation,
+		/** The WebSocket's frames, as the UI gets them. */
+		frames(t: TestContext) {
+			const token = readFileSync(join(fx.stateDir, "token"), "utf8").trim();
+			const ws = new WebSocket(`${stomp.url.replace("http", "ws")}/api/ws?token=${token}`);
+			const received: ServerMessage[] = [];
+			ws.on("message", (raw) => received.push(JSON.parse(String(raw)) as ServerMessage));
+			t.after(() => ws.close());
+			return received;
+		},
 		abort: (id: number) => fx.fetch(`${stomp.url}/api/threads/${id}/abort`, { method: "POST" }),
 		ask: () => until(async () => (await stomp.state()).asks[0]),
 		answer: (id: string, body: unknown) => fx.fetch(`${stomp.url}/api/asks/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(body) }),
@@ -162,6 +172,25 @@ test("a GPT reviewer blocks a Claude author's commit, the fix goes back, and rou
 	await s.say(desk, "hello");
 	await sleep(500);
 	assert.equal((await s.tasks()).length, 1);
+});
+
+test("a running review is in its thread's progress, over the WebSocket, until its card lands", async (t) => {
+	const s = await startReviewed(t);
+	const desk = await s.desk("alpha");
+	const frames = s.frames(t);
+	const progressOf = (m: ServerMessage) => (m.type === "state" ? m.state.threads.find((x) => x.id === desk)?.progress : undefined);
+	await s.say(desk, `bind; run: ${commit("touch slow.txt", "A")}`);
+	const worktree = join(s.repo, "..", "state", "work", `alpha-${desk}`);
+	const shown = await until(() => frames.map(progressOf).find((p) => p?.[0]?.detail.length === 3), 10_000);
+	const [task] = await s.tasks();
+	assert.deepEqual(shown, [{ id: `review:${task!.id}`, kind: "review", label: "Reviewing", detail: ["gpt-r (openai)", "round 1/3", s.head(worktree).slice(0, 8)] }]);
+	await s.settled(desk);
+	const last = await until(() => frames.findLast((m) => m.type === "state" && m.state.threads.find((x) => x.id === desk)?.review));
+	assert.equal(progressOf(last), undefined, "gone once the card is in");
+	assert.ok(!frames.some((m) => m.type === "state" && progressOf(m) && m.state.threads.find((x) => x.id === desk)?.review));
+	assert.equal((await s.counts(desk)).cards.length, 1);
+	// Nothing under way, nothing shown.
+	assert.ok((await s.thread(desk)).progress === undefined);
 });
 
 test("still blocking after the configured rounds: done with the finding open, and the thread carries on", async (t) => {
@@ -242,6 +271,9 @@ test("a restart during the review phase: one review, one fix, one card", async (
 	await s.say(desk, `bind; run: ${BUG.replace("Add add()", "slow")}`);
 	await until(() => s.reviewers.length > 0);
 	await s.restart();
+	// The strip comes back from the task's checkpoint: the review is still running.
+	const shown = await until(async () => (await s.thread(desk)).progress, 5_000);
+	assert.deepEqual([shown[0]!.label, shown[0]!.detail.slice(0, 2)], ["Reviewing", ["gpt-r (openai)", "round 1/3"]]);
 	const thread = await s.settled(desk);
 	assert.deepEqual([thread.review!.verdict, thread.review!.rounds], ["approved", 2]);
 	const counts = await s.counts(desk);

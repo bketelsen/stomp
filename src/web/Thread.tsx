@@ -2,6 +2,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { AskCard } from "./Ask.tsx";
 import { Composer } from "./Composer.tsx";
+import { ProgressStrip } from "./Progress.tsx";
 import { type Calls, Entry, Live } from "./Entry.tsx";
 import { clearError, loadEarlier, useStore } from "./store.ts";
 import { dutyOf, fixOf, inbox, live, message, reportOf, textOf, type ToolResultMessage } from "./view.ts";
@@ -13,6 +14,7 @@ export function Thread({ disabled }: { disabled?: string }) {
 	const olderDone = useStore((s) => s.olderDone);
 	const error = useStore((s) => s.error);
 	const asks = useStore((s) => s.snapshot?.asks);
+	const progress = useStore((s) => s.snapshot?.threads.find((t) => t.id === s.thread)?.progress);
 
 	const entries = useMemo(() => [...older, ...(view?.entries ?? [])], [older, view?.entries]);
 	const liveState = live(view);
@@ -114,6 +116,7 @@ export function Thread({ disabled }: { disabled?: string }) {
 						</button>
 					</div>
 				)}
+				<ProgressStrip items={progress} />
 			</div>
 			{thread !== undefined && <Composer key={thread} thread={thread} working={working} since={since} disabled={disabled} />}
 		</>
