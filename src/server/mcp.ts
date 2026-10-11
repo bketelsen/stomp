@@ -13,16 +13,15 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { ContentBlock, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { Type } from "typebox";
+import { type Backoff, backoff } from "./backoff.ts";
 import type { StompConfig } from "./config.ts";
 
 /** A guard's command for a call, with where it runs when that isn't the caller's cwd; undefined for a call it doesn't judge. */
 export type Judged = (name: string, args: Record<string, unknown>) => string | { command: string; cwd: string } | undefined;
-type Server = { client?: Client; starting?: Promise<Client>; error?: string; extension: Extension; tools?: Map<string, Tool>; retry?: NodeJS.Timeout; failures: number };
+type Server = { client?: Client; starting?: Promise<Client>; error?: string; extension: Extension; tools?: Map<string, Tool>; retry: Backoff };
 
 const CAP = 50_000;
 const START_MS = 15_000;
-const RETRY_MS = 1_000;
-const MAX_RETRY_MS = 300_000;
 const reply = (text: string, isError = false) => ({ content: [{ type: "text" as const, text }], isError });
 const quote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
 const marker = ({ annotations: a }: Tool) => (a?.readOnlyHint === true ? " --read-only" : a?.destructiveHint === true ? " --destructive" : "");
@@ -43,8 +42,9 @@ export type McpHost = {
 };
 
 export function stompMcp(config: StompConfig["mcp"], host: McpHost) {
-	const servers = new Map(Object.keys(config).map((name): [string, Server] => [name, { extension: extensionOf(name, []), failures: 0 }]));
-	let closed = false;
+	const servers = new Map(
+		Object.keys(config).map((name): [string, Server] => [name, { extension: extensionOf(name, []), retry: backoff(() => void running(name).catch(() => undefined)) }]),
+	);
 
 	/** One extension per tool list: its guard knows exactly its tools, so a phase's tools and guard agree. */
 	function extensionOf(server: string, listed: Tool[]): Extension {
@@ -90,7 +90,7 @@ export function stompMcp(config: StompConfig["mcp"], host: McpHost) {
 		const client = new Client({ name: "stomp", version: "1.0.0" });
 		client.onclose = () => {
 			server.client = undefined;
-			retry(name, server);
+			server.retry.failed();
 		};
 		try {
 			const { command, args = [], env = {} } = config[name] ?? { command: "" };
@@ -100,8 +100,8 @@ export function stompMcp(config: StompConfig["mcp"], host: McpHost) {
 			const listed = [...page.tools];
 			while (page.nextCursor) listed.push(...(page = await client.listTools({ cursor: page.nextCursor }, { timeout: START_MS })).tools);
 			const was = server.error;
-			clearTimeout(server.retry);
-			Object.assign(server, { client, error: undefined, failures: 0, retry: undefined, tools: new Map(listed.map((t) => [t.name, t])), extension: extensionOf(name, listed) });
+			server.retry.ok();
+			Object.assign(server, { client, error: undefined, tools: new Map(listed.map((t) => [t.name, t])), extension: extensionOf(name, listed) });
 			host.install(server.extension);
 			console.log(`[stomp] mcp: ${name} (${listed.length} tools)`);
 			if (was !== undefined) host.changed();
@@ -111,31 +111,20 @@ export function stompMcp(config: StompConfig["mcp"], host: McpHost) {
 			const was = server.error;
 			server.error = (error as Error).message;
 			console.error(`[stomp] mcp: ${name}: ${server.error}`);
-			retry(name, server);
+			server.retry.failed();
 			if (server.error !== was) host.changed();
 			throw error;
 		}
 	}
 
-	/** Start it again later, unless that's already set (or stomp is closing); the wait doubles with each failure. */
-	function retry(name: string, server: Server) {
-		if (closed || server.retry) return;
-		const ms = Math.min(RETRY_MS * 2 ** server.failures++, MAX_RETRY_MS);
-		server.retry = setTimeout(() => {
-			server.retry = undefined;
-			running(name).catch(() => undefined);
-		}, ms);
-	}
-
 	return {
 		/** Level-triggered: start each server that isn't running or waiting to retry. At startup, and when agent files change. */
-		start: () => Promise.all([...servers].filter(([, s]) => !s.retry).map(([name]) => running(name).catch(() => undefined))),
+		start: () => Promise.all([...servers].filter(([, s]) => !s.retry.waiting).map(([name]) => running(name).catch(() => undefined))),
 		extension: (name: string) => servers.get(name)!.extension,
 		/** For agents' files: why an agent can't have this server, or undefined. */
 		problem: (name: string) => (servers.has(name) ? servers.get(name)!.error && `MCP server ${name} didn't start (${servers.get(name)!.error}); retrying` : `unknown MCP server "${name}"`),
 		close: () => {
-			closed = true;
-			for (const server of servers.values()) clearTimeout(server.retry);
+			for (const server of servers.values()) server.retry.stop();
 			return Promise.all([...servers.values()].map((server) => server.client?.close()));
 		},
 	};

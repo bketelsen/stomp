@@ -83,7 +83,10 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 	if (!readOptional(tokenFile).trim()) writeFileSync(tokenFile, `${randomBytes(32).toString("base64url")}\n`, { mode: 0o600 });
 	const token = readFileSync(tokenFile, "utf8").trim();
 	const credentials = new FileCredentialStore(join(options.stateDir, "credentials.json"));
-	const models = options.models ?? (await buildModels(config, credentials));
+	// A model server or MCP server that comes up or goes down reloads agents, once reloading is wired below.
+	const wired = Promise.withResolvers<void>();
+	const later = () => void wired.promise.then(() => changed());
+	const { models, stop: stopServers } = options.models ? { models: options.models, stop: undefined } : await buildModels(config, credentials, later);
 	const family = (modelId: string) => familyOf(modelId, config.families);
 	const load = () =>
 		loadAgents(options.configDir, {
@@ -143,15 +146,13 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 	if (review) registry.install(review.extension);
 	// Agents' shells don't inherit the server's secrets, and MCP results never carry their values.
 	const shellEnv = hiddenEnv(options.stateDir);
-	// A server that comes up or goes down reloads agents, once reloading is wired below.
-	const wired = Promise.withResolvers<void>();
 	const secretValues = Object.keys(shellEnv).flatMap((name) => (process.env[name]?.length ?? 0) >= 8 ? [process.env[name]!] : []);
 	const mcp = stompMcp(config.mcp, {
 		redact: (text) => secretValues.reduce((out, value) => out.replaceAll(value, "[redacted]"), text),
 		timeoutMs: config.bash.timeoutSeconds * 1000,
 		guard: guardFor,
 		install: (extension) => registry.install(extension),
-		changed: () => void wired.promise.then(() => changed()),
+		changed: later,
 	});
 	await mcp.start();
 	let agents = load();
@@ -266,6 +267,7 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 		close: () =>
 			(closing ??= (async () => {
 				clearTimeout(timer);
+				stopServers?.();
 				for (const watcher of watchers) watcher.close();
 				for (const ws of wss.clients) ws.terminate();
 				wss.close();
