@@ -26,7 +26,7 @@ import { type Judged, stompMcp } from "./mcp.ts";
 import { stopThread } from "./stop.ts";
 import { buildModels, resolveModel, SUBSCRIPTIONS } from "./models.ts";
 import { notebooks } from "./notebook.ts";
-import { checkPool, reviewPool, stompReview } from "./review.ts";
+import { checkPool, REVIEW, reviewPool, stompReview } from "./review.ts";
 import { watchState } from "./state.ts";
 import { stompSupervisor } from "./supervisor.ts";
 import { createThread, listThreads, syncThreads, ThreadsDoc } from "./threads.ts";
@@ -172,7 +172,7 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 	await syncThreads(harness, agents, extensions);
 	const registered = models.getProviders().map((provider) => provider.id);
 	const providerIds = [...new Set([...Object.keys(SUBSCRIPTIONS), ...Object.keys(config.providers), ...registered])];
-	const state = await watchState(harness, () => agents, models, providerIds, asks, notes);
+	const state = await watchState(harness, () => agents, models, providerIds, asks, notes, review ? { [REVIEW]: review.progress } : {});
 	const stopReviewing = review?.start(harness);
 	harness.resume();
 	const clock = options.dutyClock ?? { tickMs: 60_000, now: Date.now };

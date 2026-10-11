@@ -70,8 +70,22 @@ export interface ThreadInfo {
 	branch?: string;
 	/** The latest finished cross-family review of this thread's commits. */
 	review?: ReviewRecord;
+	/** What's under way on it now, oldest first; shown above its composer. Absent when nothing is. */
+	progress?: Progress[];
 	/** Brian archived it. Desks can't be. */
 	archived?: true;
+}
+
+/** One thing under way on a thread, derived from a live task: a running review, say. Gone when the task is. */
+export interface Progress {
+	/** Stable while it lasts, e.g. "review:42". */
+	id: string;
+	/** What it is, e.g. "review"; the UI may tint by it. */
+	kind: string;
+	/** A few words, e.g. "Reviewing". */
+	label: string;
+	/** Short facts shown after the label, e.g. ["gpt-5 (openai)", "round 1/3", "1a2b3c4d"]. */
+	detail: string[];
 }
 
 export interface ReviewFinding {

@@ -23,7 +23,7 @@ import {
 	type Tx,
 } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
-import { REVIEW_ENTRY } from "../shared/protocol.ts";
+import { type Progress, REVIEW_ENTRY } from "../shared/protocol.ts";
 import type { AgentConfig } from "./agents.ts";
 import { bashWithTimeout } from "./coding.ts";
 import type { StompConfig } from "./config.ts";
@@ -369,6 +369,15 @@ export function stompReview(options: ReviewOptions) {
 		};
 	}
 
+	/** A live Review in its thread's progress strip: reviewer, round and commit, until the done phase lands its card. */
+	function progress(task: { id: number; state: { checkpoint?: unknown } }): Progress | undefined {
+		const cp = task.state.checkpoint as ReviewState | undefined;
+		if (cp === undefined || cp.phase === "done") return undefined;
+		const reviewer = cp.model === undefined ? [] : [`${cp.model.slice(cp.model.indexOf("/") + 1)} (${cp.family})`];
+		const label = cp.phase === "fix" ? "Review: author fixing" : "Reviewing";
+		return { id: `review:${task.id}`, kind: "review", label, detail: [...reviewer, `round ${cp.round}/${options.rounds + 1}`, short(cp.sha)] };
+	}
+
 	/**
 	 * For a Delegation, once its thread is idle: the review line for the thread's HEAD, waiting for its Review (and
 	 * starting it, if the trigger hasn't yet). Undefined when the thread is unbound or has no commits.
@@ -392,5 +401,5 @@ export function stompReview(options: ReviewOptions) {
 		}
 	}
 
-	return { extension, start, reviewed };
+	return { extension, start, reviewed, progress };
 }
