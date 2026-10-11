@@ -6,6 +6,7 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
 import {
+	type ContextView,
 	type ConversationId,
 	configure,
 	defineExtension,
@@ -126,10 +127,23 @@ const textOf = (m: Message | undefined): string =>
 /** A thread that has commits nobody reviewed or tried to review. */
 const unreviewed = (row: ThreadRecord, sha: string) => sha !== row.base && sha !== row.review?.sha && sha !== row.requested;
 
-/** The Delegation's brief (a delegated thread's first message), else the latest request before the commits. */
-function briefOf(row: ThreadRecord, messages: readonly Message[]): string {
-	const asks = messages.filter((m) => m.role === "user").map(textOf).filter((text) => !text.startsWith(FIX_PREFIX));
-	return ((row.delegatedBy === undefined ? asks.at(-1) : asks[0]) ?? "(none)").slice(0, 8000);
+/**
+ * Every instruction for this work, in order: a delegated thread's from its brief on (steers and follow-ups included),
+ * another thread's since its last review. Over the cap, the latest stays whole and the earlier ones shrink to a line.
+ */
+function briefOf(row: ThreadRecord, view: Pick<ContextView, "entries" | "contributions">): string {
+	const from = row.delegatedBy === undefined ? view.entries.findLastIndex((e) => e.kind === REVIEW_ENTRY) + 1 : 0;
+	const asks = view.contributions
+		.slice(from)
+		.flat()
+		.filter((m) => m.role === "user")
+		.map(textOf)
+		.filter((text) => text !== "" && !text.startsWith(FIX_PREFIX));
+	if (asks.length <= 1) return (asks[0] ?? "(none)").slice(0, 8000);
+	const list = (clip: (text: string) => string) =>
+		`${asks.length} instructions, oldest first; where they disagree, the later one stands.\n\n${asks.map((a, i) => `[${i + 1}] ${i < asks.length - 1 ? clip(a) : a}`).join("\n\n")}`;
+	const whole = list((a) => a);
+	return (whole.length <= 8000 ? whole : list((a) => `${a.split("\n")[0]!.slice(0, 200)} [cut]`)).slice(-8000);
 }
 
 async function diffOf(row: Binding, sha: string): Promise<string> {
@@ -207,11 +221,12 @@ export function stompReview(options: ReviewOptions) {
 					}, c);
 				}
 				const reviewer = (await rt.conversation(cp.reviewer as ConversationId, c))!;
-				const { messages } = await rt.context(thread, c);
+				const view = await rt.context(thread, c);
+				const { messages } = view;
 				const test = options.repos[row.repo]?.test;
 				const prompt = [
 					cp.round === 1
-						? `Review the commits on ${row.branch} in ${row.worktree}, ${short(row.base)}..${short(cp.sha)}.\n\n${tag("brief", briefOf(row, messages))}`
+						? `Review the commits on ${row.branch} in ${row.worktree}, ${short(row.base)}..${short(cp.sha)}.\n\n${tag("brief", briefOf(row, view))}`
 						: `The author answered your blocking findings. Review the change again at ${short(cp.sha)}.`,
 					tag("author-says", textOf(messages.findLast((m) => m.role === "assistant" && textOf(m) !== "")).slice(0, 8000)),
 					...(test ? [`The repo's tests run with: ${test}`] : []),

@@ -94,6 +94,7 @@ async function startReviewed(t: TestContext, pool = "[scripted/claude-r, scripte
 		repo,
 		reviewers,
 		desk: async (agent: string) => (await stomp.state()).agents.find((a) => a.id === agent)!.deskThread,
+		threads: async () => (await stomp.state()).threads,
 		thread: async (id: number) => (await stomp.state()).threads.find((thread) => thread.id === id)!,
 		say: async (id: number, text: string) => (await (await conversation(id)).submit({ type: "input", content: text }, ctx)).wait(ctx),
 		head: (worktree: string) => execFileSync("git", ["rev-parse", "HEAD"], { cwd: worktree, encoding: "utf8" }).trim(),
@@ -234,6 +235,30 @@ test("a delegated thread with a repo starts in its worktree and is reviewed befo
 	const info = await s.thread(id);
 	assert.deepEqual([info.branch, info.review!.verdict, info.delegation], [`stomp/alpha/${id}`, "approved", "reported"]);
 	assert.deepEqual((await s.counts(id)).prompts, [2]);
+});
+
+test("a steer that changes the requirement mid-task reaches the reviewer's brief, after the delegation", async (t) => {
+	const s = await startReviewed(t);
+	const boss = await s.desk("boss");
+	const desk = await s.desk("alpha");
+	await s.say(boss, `delegate run: ${commit("sleep 1 && touch draft.txt", "Open as draft")}`);
+	const id = await until(async () => (await s.threads()).find((thread) => thread.agent === "alpha" && thread.id !== desk && thread.status === "working")?.id);
+	const steer = "steer: Brian changed it, open the PR as a draft";
+	await (await s.conversation(id)).submit({ type: "input", content: steer, whenBusy: "steer" }, ctx);
+	await until(async () => (await s.userTexts(boss)).find((text) => REPORT_PREFIX.test(text)), 20_000);
+	const brief = /<brief>\n([^]*)\n<\/brief>/.exec(s.reviewers[0]!.lastUserText)![1]!;
+	assert.match(brief, /^2 instructions, oldest first; where they disagree, the later one stands\.\n\n\[1\] run: sleep 1[^]*\n\n\[2\] steer: Brian changed it/);
+});
+
+test("on a desk thread, the next review's brief starts after the last review", async (t) => {
+	const s = await startReviewed(t);
+	const desk = await s.desk("alpha");
+	await s.say(desk, `bind; run: ${commit("touch one.txt", "One")}`);
+	await s.settled(desk);
+	await s.say(desk, `run: ${commit("touch two.txt", "Two")}`);
+	await until(() => s.reviewers.find((r) => r.lastUserText.includes("two.txt")), 20_000);
+	const brief = /<brief>\n([^]*)\n<\/brief>/.exec(s.reviewers.at(-1)!.lastUserText)![1]!;
+	assert.match(brief, /^run: touch two\.txt/);
 });
 
 test("a restart during the review phase: one review, one fix, one card", async (t) => {
