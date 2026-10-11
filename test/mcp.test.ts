@@ -23,7 +23,7 @@ async function start(t: TestContext) {
 	const log = join(fx.root, "mcp.log");
 	const starts = join(fx.root, "starts.log");
 	const server = [join(import.meta.dirname, "support", "mcp-server.ts")];
-	const fake = { command: process.execPath, args: server, env: { FAKE_LOG: log, FAKE_FLAG: join(fx.root, "tag-is-destructive"), FAKE_STARTS: starts } };
+	const fake = { command: process.execPath, args: server, env: { FAKE_LOG: log, FAKE_FLAG: join(fx.root, "tag-is-destructive"), FAKE_STARTS: starts, FAKE_DOWN: join(fx.root, "fake-down") } };
 	const broken = { command: join(fx.root, "no-such-server") };
 	// Down at startup, like the NAS mid-upgrade, until a test removes $FAKE_DOWN.
 	const flaky = { command: process.execPath, args: server, env: { FAKE_LOG: log, FAKE_DOWN: join(fx.root, "down") } };
@@ -145,12 +145,15 @@ test("a server that fails at startup retries on its own, and its agents get thei
 	assert.ok(s.seen.w3!.includes("flaky_read"));
 });
 
-test("a server that exits mid-run starts again without waiting for a call", async (t) => {
+test("a server that exits mid-run starts again without waiting for a call, and says it's retrying while it can't", async (t) => {
 	const s = await start(t);
 	assert.equal(s.started(), 1);
+	writeFileSync(join(s.fx.root, "fake-down"), "");
 	await s.tool("fake_exit", {});
-	await until(() => s.started() === 2);
-	assert.equal(await s.error("alpha"), undefined);
+	assert.match(await until(() => s.error("alpha")), /^MCP server fake didn't start \(.*\); retrying$/);
+	rmSync(join(s.fx.root, "fake-down"));
+	await until(async () => (await s.error("alpha")) === undefined);
+	assert.equal(s.started(), 2);
 	await s.tool("fake_read", { name: "NAS_SECRET" });
 	assert.equal(await s.last(), "NAS_SECRET=[redacted]");
 	assert.equal(s.started(), 2, "the call found it running");
