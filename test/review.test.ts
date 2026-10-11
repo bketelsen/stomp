@@ -25,6 +25,7 @@ const NIT = { severity: "note", summary: "name it sum" };
 /** The author runs the command after "run: " (binding first when told to), and fixes what the reviewer names. */
 function author(r: Request, repo: string): Turn {
 	const said = r.lastUserText;
+	if (said.includes("] Approved ")) return r.lastTool === "bash" ? { text: "Marked the PR ready." } : { bash: "echo gh pr ready" };
 	const fix = said.startsWith("[review by");
 	if (said.startsWith("bind") && r.lastTool === undefined) return { calls: [["workspace", { repo }]] };
 	const command = fix ? (said.includes("subtracts") ? FIX : AGAIN) : /run: (.*)/.exec(said)?.[1];
@@ -110,9 +111,10 @@ async function startReviewed(t: TestContext, pool = "[scripted/claude-r, scripte
 			const tasks = await s.tasks();
 			const owned = await stomp.harness.commit(async (tx) => (await tx.scanConversations({ ownerTaskId: tasks[0]!.id }, 10)).items, ctx);
 			const prompts = await Promise.all(owned.map(async (c) => (await userTexts(c.id)).length));
-			const fixes = (await userTexts(id)).filter((text) => text.startsWith("[review by")).length;
+			const fixes = (await userTexts(id)).filter((text) => text.startsWith("[review by") && text.includes("Blocking findings")).length;
+			const approvals = (await userTexts(id)).filter((text) => text.startsWith("[review by") && text.includes("] Approved ")).length;
 			const cards = (await entries(id)).filter((e) => e.kind === REVIEW_ENTRY);
-			return { tasks: tasks.length, prompts, fixes, cards };
+			return { tasks: tasks.length, prompts, fixes, approvals, cards };
 		},
 		userTexts,
 		conversation,
@@ -138,11 +140,17 @@ test("a GPT reviewer blocks a Claude author's commit, the fix goes back, and rou
 	assert.deepEqual([thread.repo, thread.branch], [s.repo, `stomp/alpha/${desk}`]);
 	assert.deepEqual(thread.review, { sha: s.head(worktree), verdict: "approved", findings: [NOTE], reviewer: "scripted/gpt-r", family: "openai", rounds: 2 });
 	const counts = await s.counts(desk);
-	assert.deepEqual([counts.tasks, counts.prompts, counts.fixes], [1, [2], 1]);
+	assert.deepEqual([counts.tasks, counts.prompts, counts.fixes, counts.approvals], [1, [2], 1, 1]);
 	assert.deepEqual(counts.cards.map((card) => card.data), [thread.review]);
+	// Approval comes after every fix round, and is the author's cue to mark its draft PR ready.
+	const texts = await s.userTexts(desk);
+	const approval = texts.at(-1)!;
+	assert.match(approval, new RegExp(`^\\[review by scripted/gpt-r \\(openai\\)\\] Approved ${s.head(worktree).slice(0, 8)}\\. .*gh pr ready`));
+	assert.ok(texts.indexOf(approval) > texts.findIndex((text) => text.includes("Blocking findings")));
 	const view = await (await s.conversation(desk)).context(ctx);
 	assert.deepEqual(view.contributions[view.entries.findIndex((e) => e.kind === REVIEW_ENTRY)], [], "the card adds nothing to model context");
 	const [fix] = (await s.userTexts(desk)).filter((text) => text.startsWith("[review by"));
+	assert.equal(s.reviewers.length, 2, "the approval turn commits nothing, so nothing more is reviewed");
 	assert.match(fix!, /^\[review by scripted\/gpt-r \(openai\)\] Blocking findings on [0-9a-f]{8}:\n- add\.js:1: add\(\) subtracts: add\(2, 2\) returns 0\n\nFix them/);
 	assert.doesNotMatch(fix!, /no test for add/, "notes don't go to the author");
 	const first = s.reviewers[0]!;
@@ -164,7 +172,7 @@ test("still blocking after the configured rounds: done with the finding open, an
 	assert.equal(thread.review!.verdict, "changes_requested");
 	assert.deepEqual([thread.review!.rounds, thread.review!.findings.map((f) => f.severity)], [3, ["blocking"]]);
 	const counts = await s.counts(desk);
-	assert.deepEqual([counts.tasks, counts.prompts, counts.fixes, counts.cards.length], [1, [3], 2, 1]);
+	assert.deepEqual([counts.tasks, counts.prompts, counts.fixes, counts.approvals, counts.cards.length], [1, [3], 2, 0, 1]);
 	await s.say(desk, "hello");
 	await sleep(500);
 	assert.equal((await s.tasks()).length, 1);
@@ -177,7 +185,7 @@ test("no verdict gets one nudge, then the review is recorded as failed", async (
 	const thread = await s.settled(desk);
 	assert.deepEqual([thread.review!.verdict, thread.review!.findings, thread.review!.rounds], ["failed", [], 1]);
 	const counts = await s.counts(desk);
-	assert.deepEqual([counts.prompts, counts.fixes, counts.cards.length], [[2], 0, 1]);
+	assert.deepEqual([counts.prompts, counts.fixes, counts.approvals, counts.cards.length], [[2], 0, 0, 1]);
 });
 
 test("changes_requested with only notes counts as approved, and nothing goes back to the author", async (t) => {
@@ -186,7 +194,7 @@ test("changes_requested with only notes counts as approved, and nothing goes bac
 	await s.say(desk, `bind; run: ${commit("touch nits.txt", "x")}`);
 	const thread = await s.settled(desk);
 	assert.deepEqual([thread.review!.verdict, thread.review!.findings, thread.review!.rounds], ["approved", [NOTE, NIT], 1]);
-	assert.equal((await s.counts(desk)).fixes, 0);
+	assert.deepEqual([(await s.counts(desk)).fixes, (await s.counts(desk)).approvals], [0, 1]);
 });
 
 test("uncommitted changes and turns without a commit start no review", async (t) => {
@@ -206,8 +214,8 @@ test("a delegated thread with a repo starts in its worktree and is reviewed befo
 	await s.say(boss, `delegate run: ${BUG}`);
 	const report = await until(async () => (await s.userTexts(boss)).find((text) => REPORT_PREFIX.test(text)), 20_000);
 	const id = Number(REPORT_PREFIX.exec(report)![2]);
-	// The author's reply to the fix round reaches the report, before the Review line and its notes.
-	assert.match(report, /done: run: printf 'export\n\nFixed it\.\n\nReview: approved by scripted\/gpt-r \(openai\) after 2 rounds, 1 note\n- note: /);
+	// The author's replies to the fix round and the approval reach the report, before the Review line and its notes.
+	assert.match(report, /done: run: printf 'export\n\nFixed it\.\n\nMarked the PR ready\.\n\nReview: approved by scripted\/gpt-r \(openai\) after 2 rounds, 1 note\n- note: /);
 	const info = await s.thread(id);
 	assert.deepEqual([info.branch, info.review!.verdict, info.delegation], [`stomp/alpha/${id}`, "approved", "reported"]);
 	assert.deepEqual((await s.counts(id)).prompts, [2]);
@@ -222,7 +230,7 @@ test("a restart during the review phase: one review, one fix, one card", async (
 	const thread = await s.settled(desk);
 	assert.deepEqual([thread.review!.verdict, thread.review!.rounds], ["approved", 2]);
 	const counts = await s.counts(desk);
-	assert.deepEqual([counts.tasks, counts.prompts, counts.fixes, counts.cards.length], [1, [2], 1, 1]);
+	assert.deepEqual([counts.tasks, counts.prompts, counts.fixes, counts.approvals, counts.cards.length], [1, [2], 1, 1, 1]);
 	assert.equal(s.reviewers.filter((r) => r.lastUserText.includes("slow")).length, 2, "the interrupted request ran again");
 });
 
