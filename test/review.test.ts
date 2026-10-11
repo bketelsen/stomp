@@ -35,10 +35,11 @@ function author(r: Request, repo: string): Turn {
 
 /** The reviewer decides from the diff: a - b blocks, always-blocks always blocks, nits are notes, no-verdict never calls it. */
 function reviewer(r: Request): Turn {
-	const said = r.lastUserText;
+	const said = r.lastUserText.slice(r.lastUserText.indexOf("<diff>"));
 	const verdict = (v: string, findings: JsonObject[]): Turn => ({ calls: [["verdict", { verdict: v, findings }]] });
-	if (said.includes("no-verdict") || said.startsWith("You haven't")) return { text: "Looks fine." };
+	if (said.includes("no-verdict") || r.lastUserText.startsWith("You haven't")) return { text: "Looks fine." };
 	if (said.includes("ask-reviewer") && r.lastTool === undefined) return { bash: "echo reviewer-ran | sh" };
+	if (said.includes("a - b") && said.includes("slowfix")) return verdict("changes_requested", [{ ...BLOCKER, summary: `slowfix: ${BLOCKER.summary}` }]);
 	if (said.includes("a - b")) return verdict("changes_requested", [BLOCKER, NOTE]);
 	if (said.includes("always-blocks")) return verdict("changes_requested", [{ severity: "blocking", summary: "always-blocks is there" }]);
 	if (said.includes("nits")) return verdict("changes_requested", [NOTE, NIT]);
@@ -67,7 +68,7 @@ async function startReviewed(t: TestContext, pool = "[scripted/claude-r, scripte
 	const reviewers: Request[] = [];
 	const models = scriptedModels(
 		(r) => {
-			if (r.model === "claude-a") return author(r, repo);
+			if (r.model === "claude-a") return { ...author(r, repo), delayMs: r.lastUserText.startsWith("[review by") && r.lastUserText.includes("slowfix") ? 1000 : 0 };
 			if (r.model === "w0") {
 				if (r.toolResults || !r.lastUserText.startsWith("delegate ")) return { text: "ok" };
 				return { calls: [["delegate", { agent: "alpha", brief: r.lastUserText.slice(9), repo }]] };
@@ -94,6 +95,7 @@ async function startReviewed(t: TestContext, pool = "[scripted/claude-r, scripte
 		repo,
 		reviewers,
 		desk: async (agent: string) => (await stomp.state()).agents.find((a) => a.id === agent)!.deskThread,
+		threads: async () => (await stomp.state()).threads,
 		thread: async (id: number) => (await stomp.state()).threads.find((thread) => thread.id === id)!,
 		say: async (id: number, text: string) => (await (await conversation(id)).submit({ type: "input", content: text }, ctx)).wait(ctx),
 		head: (worktree: string) => execFileSync("git", ["rev-parse", "HEAD"], { cwd: worktree, encoding: "utf8" }).trim(),
@@ -141,7 +143,10 @@ test("a GPT reviewer blocks a Claude author's commit, the fix goes back, and rou
 	assert.deepEqual(thread.review, { sha: s.head(worktree), verdict: "approved", findings: [NOTE], reviewer: "scripted/gpt-r", family: "openai", rounds: 2 });
 	const counts = await s.counts(desk);
 	assert.deepEqual([counts.tasks, counts.prompts, counts.fixes, counts.approvals], [1, [2], 1, 1]);
-	assert.deepEqual(counts.cards.map((card) => card.data), [thread.review]);
+	assert.deepEqual(
+		counts.cards.map(({ data }) => ({ ...(data as object), upTo: undefined })),
+		[{ ...thread.review, upTo: undefined }],
+	);
 	// Approval comes after every fix round, and is the author's cue to mark its draft PR ready.
 	const texts = await s.userTexts(desk);
 	const approval = texts.at(-1)!;
@@ -210,6 +215,9 @@ test("a commit during a review defers the approval to the review of the new HEAD
 	assert.deepEqual([thread.review!.sha, thread.review!.verdict, (await s.tasks()).length], [s.head(worktree), "approved", 2]);
 	const approvals = (await s.userTexts(desk)).filter((text) => text.includes("] Approved "));
 	assert.deepEqual(approvals.map((text) => /Approved (\w+)/.exec(text)![1]), [s.head(worktree).slice(0, 8)]);
+	// B's request came during A's review, before A's card: it still reaches B's reviewer, and A's doesn't.
+	const briefs = s.reviewers.flatMap((r) => /<brief>\n([^]*)\n<\/brief>/.exec(r.lastUserText)?.[1] ?? []);
+	assert.match(briefs.at(-1)!, /^run: touch b\.txt/);
 });
 
 test("uncommitted changes and turns without a commit start no review", async (t) => {
@@ -236,6 +244,44 @@ test("a delegated thread with a repo starts in its worktree and is reviewed befo
 	assert.deepEqual((await s.counts(id)).prompts, [2]);
 });
 
+test("a steer that changes the requirement mid-task reaches the reviewer's brief, after the delegation", async (t) => {
+	const s = await startReviewed(t);
+	const boss = await s.desk("boss");
+	const desk = await s.desk("alpha");
+	await s.say(boss, `delegate run: ${commit("sleep 1 && touch draft.txt", "Open as draft")}`);
+	const id = await until(async () => (await s.threads()).find((thread) => thread.agent === "alpha" && thread.id !== desk && thread.status === "working")?.id);
+	const steer = "steer: Brian changed it, open the PR as a draft";
+	await (await s.conversation(id)).submit({ type: "input", content: steer, whenBusy: "steer" }, ctx);
+	await until(async () => (await s.userTexts(boss)).find((text) => REPORT_PREFIX.test(text)), 20_000);
+	const brief = /<brief>\n([^]*)\n<\/brief>/.exec(s.reviewers[0]!.lastUserText)![1]!;
+	assert.match(brief, /^2 instructions, oldest first; where they disagree, the later one stands\.\n\n\[1\] run: sleep 1[^]*\n\n\[2\] steer: Brian changed it/);
+});
+
+test("a steer during a fix round reaches the round-2 reviewer", async (t) => {
+	const s = await startReviewed(t);
+	const desk = await s.desk("alpha");
+	const done = s.say(desk, `bind; run: ${BUG.replace("> add.js", "> add.js && touch slowfix.txt")}`);
+	await until(async () => (await s.userTexts(desk)).some((text) => text.startsWith("[review by")), 20_000);
+	const steer = "steer: Brian changed it, open the PR as a draft";
+	await (await s.conversation(desk)).submit({ type: "input", content: steer, whenBusy: "steer" }, ctx);
+	await done;
+	const thread = await s.settled(desk);
+	assert.deepEqual([thread.review!.verdict, thread.review!.rounds], ["approved", 2]);
+	const round2 = s.reviewers.find((r) => r.lastUserText.startsWith("The author answered"))!;
+	assert.match(round2.lastUserText, /<brief>\n2 instructions[^]*\[1\] bind; run: printf[^]*\[2\] steer: Brian changed it/);
+});
+
+test("on a desk thread, the next review's brief starts after the last review", async (t) => {
+	const s = await startReviewed(t);
+	const desk = await s.desk("alpha");
+	await s.say(desk, `bind; run: ${commit("touch one.txt", "One")}`);
+	await s.settled(desk);
+	await s.say(desk, `run: ${commit("touch two.txt", "Two")}`);
+	await until(() => s.reviewers.find((r) => r.lastUserText.includes("two.txt")), 20_000);
+	const brief = /<brief>\n([^]*)\n<\/brief>/.exec(s.reviewers.at(-1)!.lastUserText)![1]!;
+	assert.match(brief, /^run: touch two\.txt/);
+});
+
 test("a restart during the review phase: one review, one fix, one card", async (t) => {
 	const s = await startReviewed(t);
 	const desk = await s.desk("alpha");
@@ -246,7 +292,7 @@ test("a restart during the review phase: one review, one fix, one card", async (
 	assert.deepEqual([thread.review!.verdict, thread.review!.rounds], ["approved", 2]);
 	const counts = await s.counts(desk);
 	assert.deepEqual([counts.tasks, counts.prompts, counts.fixes, counts.approvals, counts.cards.length], [1, [2], 1, 1, 1]);
-	assert.equal(s.reviewers.filter((r) => r.lastUserText.includes("slow")).length, 2, "the interrupted request ran again");
+	assert.equal(s.reviewers.filter((r) => r.lastUserText.startsWith("Review the commits")).length, 2, "the interrupted request ran again");
 });
 
 test("a reviewer's command asks on the thread it reviews, and Brian's answer reaches the reviewer", async (t) => {

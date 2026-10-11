@@ -6,6 +6,7 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
 import {
+	type ContextView,
 	type ConversationId,
 	configure,
 	defineExtension,
@@ -126,10 +127,27 @@ const textOf = (m: Message | undefined): string =>
 /** A thread that has commits nobody reviewed or tried to review. */
 const unreviewed = (row: ThreadRecord, sha: string) => sha !== row.base && sha !== row.review?.sha && sha !== row.requested;
 
-/** The Delegation's brief (a delegated thread's first message), else the latest request before the commits. */
-function briefOf(row: ThreadRecord, messages: readonly Message[]): string {
-	const asks = messages.filter((m) => m.role === "user").map(textOf).filter((text) => !text.startsWith(FIX_PREFIX));
-	return ((row.delegatedBy === undefined ? asks.at(-1) : asks[0]) ?? "(none)").slice(0, 8000);
+/**
+ * Every instruction for this work, in order: a delegated thread's from its brief on (steers and follow-ups included),
+ * another thread's after what its last review's brief covered. Over the cap, the latest stays whole, earlier ones a line.
+ */
+function briefOf(row: ThreadRecord, view: Pick<ContextView, "entries" | "contributions">): string {
+	const card = view.entries.findLastIndex((e) => e.kind === REVIEW_ENTRY);
+	// A request sent during that review comes before its card, so cut where its brief ended (older cards: at the card).
+	const upTo = (view.entries[card]?.data as { upTo?: number } | undefined)?.upTo;
+	const after = upTo === undefined ? card + 1 : view.entries.findIndex((e) => e.id > upTo);
+	const from = row.delegatedBy !== undefined ? 0 : after === -1 ? view.entries.length : after;
+	const asks = view.contributions
+		.slice(from)
+		.flat()
+		.filter((m) => m.role === "user")
+		.map(textOf)
+		.filter((text) => text !== "" && !text.startsWith(FIX_PREFIX));
+	if (asks.length <= 1) return (asks[0] ?? "(none)").slice(0, 8000);
+	const list = (clip: (text: string) => string) =>
+		`${asks.length} instructions, oldest first; where they disagree, the later one stands.\n\n${asks.map((a, i) => `[${i + 1}] ${i < asks.length - 1 ? clip(a) : a}`).join("\n\n")}`;
+	const whole = list((a) => a);
+	return (whole.length <= 8000 ? whole : list((a) => `${a.split("\n")[0]!.slice(0, 200)} [cut]`)).slice(-8000);
 }
 
 async function diffOf(row: Binding, sha: string): Promise<string> {
@@ -155,8 +173,12 @@ export function reviewLine(r: Result): string {
 }
 
 type ReviewInput = { thread: number; sha: string };
-type Round = { sha: string; round: number; reviewer?: number; model?: string; family?: string };
-type ReviewState = ({ phase: "review" } & Round) | ({ phase: "fix"; result: Result } & Round) | { phase: "done"; result: Result };
+/** `upTo`: the last thread entry the round's brief covered. */
+type Round = { sha: string; round: number; reviewer?: number; model?: string; family?: string; upTo?: number };
+type ReviewState =
+	| ({ phase: "review" } & Round)
+	| ({ phase: "fix"; result: Result } & Round)
+	| { phase: "done"; result: Result; upTo?: number };
 type Runtime = TaskRuntime<ReviewInput, ReviewState, null, object>;
 /** What a Delegation's runtime offers reviewed(). */
 type Waiter = Pick<Runtime, "conversation" | "snapshot" | "waitForTask"> & {
@@ -207,12 +229,16 @@ export function stompReview(options: ReviewOptions) {
 					}, c);
 				}
 				const reviewer = (await rt.conversation(cp.reviewer as ConversationId, c))!;
-				const { messages } = await rt.context(thread, c);
+				const view = await rt.context(thread, c);
+				const { messages } = view;
+				cp = { ...cp, upTo: view.entries.at(-1)?.id };
 				const test = options.repos[row.repo]?.test;
 				const prompt = [
 					cp.round === 1
-						? `Review the commits on ${row.branch} in ${row.worktree}, ${short(row.base)}..${short(cp.sha)}.\n\n${tag("brief", briefOf(row, messages))}`
-						: `The author answered your blocking findings. Review the change again at ${short(cp.sha)}.`,
+						? `Review the commits on ${row.branch} in ${row.worktree}, ${short(row.base)}..${short(cp.sha)}.`
+						: `The author answered your blocking findings. Review the change again at ${short(cp.sha)}, against the brief as it is now.`,
+					// Every round: Brian may have steered the author during a fix.
+					tag("brief", briefOf(row, view)),
 					tag("author-says", textOf(messages.findLast((m) => m.role === "assistant" && textOf(m) !== "")).slice(0, 8000)),
 					...(test ? [`The repo's tests run with: ${test}`] : []),
 					tag("diff", await diffOf(row, cp.sha)),
@@ -237,7 +263,8 @@ export function stompReview(options: ReviewOptions) {
 					rounds: cp.round,
 				};
 				const fix = blocking && cp.round <= options.rounds;
-				await rt.commit(() => next(fix ? { ...cp, phase: "fix", result } : { phase: "done", result }), c);
+				const done = { phase: "done", result, upTo: cp.upTo } as const;
+				await rt.commit(() => next(fix ? { ...cp, phase: "fix", result } : done), c);
 			},
 			fix: async (task, rt, c) => {
 				const thread = task.input.thread as ConversationId;
@@ -255,16 +282,22 @@ export function stompReview(options: ReviewOptions) {
 				await (await author.submit(request, c)).wait(c);
 				const sha = await head(row.worktree);
 				await rt.commit(
-					() => next(sha !== round.sha ? { ...round, phase: "review", sha, round: round.round + 1 } : { phase: "done", result }),
+					() =>
+						next(
+							sha !== round.sha
+								? { ...round, phase: "review", sha, round: round.round + 1 }
+								: { phase: "done", result, upTo: round.upTo },
+						),
 					c,
 				);
 			},
 			done: async (task, rt, c) => {
 				const thread = task.input.thread as ConversationId;
-				const { result } = task.state.checkpoint;
+				const { result, upTo } = task.state.checkpoint;
 				// A write submission adds the card without a turn and without anything in model context.
 				const conversation = (await options.harness().conversation(thread, c))!;
-				await conversation.submit({ type: "write", entry: { kind: REVIEW_ENTRY, data: result }, requestId: `card:${rt.taskId}` }, c);
+				const data = upTo === undefined ? result : { ...result, upTo };
+				await conversation.submit({ type: "write", entry: { kind: REVIEW_ENTRY, data }, requestId: `card:${rt.taskId}` }, c);
 				// Approval is the author's cue to mark its draft PR ready, the only point after which nothing goes to it.
 				// Waiting here puts that turn, and its PR link, in a Delegation's report. Anything else is Brian's call. If the
 				// author committed since, the trigger reviews the new HEAD next, and that review's approval is the cue.
