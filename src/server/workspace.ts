@@ -23,17 +23,27 @@ export type Workspaces = {
 };
 
 export function workspaces(stateDir: string): Workspaces {
+	// Concurrent clones or fetches of one base clone collide, so callers for a repo share the one in flight.
+	const preparing = new Map<string, Promise<Source>>();
+	const prepare = async (repo: string, dir: string): Promise<Source> => {
+		if (existsSync(dir)) await git(dir, "fetch", "--quiet", "origin");
+		else {
+			mkdirSync(join(dir, ".."), { recursive: true });
+			await run("gh", ["repo", "clone", repo, dir, "--", "--quiet"]);
+		}
+		return { repo, dir, sha: await git(dir, "rev-parse", "origin/HEAD") };
+	};
 	return {
 		async source(repo) {
 			if (isAbsolute(repo)) return { repo, dir: repo, sha: await git(repo, "rev-parse", "HEAD") };
 			if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error(`repo must be "owner/name" or an absolute path, not "${repo}"`);
 			const dir = join(stateDir, "repos", repo);
-			if (existsSync(dir)) await git(dir, "fetch", "--quiet", "origin");
-			else {
-				mkdirSync(join(dir, ".."), { recursive: true });
-				await run("gh", ["repo", "clone", repo, dir, "--", "--quiet"]);
+			let pending = preparing.get(dir);
+			if (pending === undefined) {
+				pending = prepare(repo, dir).finally(() => preparing.delete(dir));
+				preparing.set(dir, pending);
 			}
-			return { repo, dir, sha: await git(dir, "rev-parse", "origin/HEAD") };
+			return pending;
 		},
 		async add({ repo, dir, sha }, agent, thread) {
 			const worktree = join(stateDir, "work", `${agent}-${thread}`);
