@@ -35,13 +35,15 @@ export function notebooks(agents: () => readonly AgentConfig[], changed: () => v
 
 	const remember = defineTool({
 		name: "remember",
-		description: "Save a short note worth knowing next time: a fact, a decision, where something lives. It goes in your notebook, which every thread of yours sees.",
+		description: "Save a short note worth knowing next time: a fact, a decision, where something lives. It goes in your notebook, which every thread of yours sees. Today's date is added for you.",
 		parameters: Type.Object({ note: Type.String() }),
 		execute: async ({ note }, api, c) => {
 			const agent = await agentOf(api, api.conversationId, c);
 			if (agent === undefined) return NOT_A_THREAD;
 			const before = readOptional(agent.notebook);
-			const line = `- ${new Date().toISOString().slice(0, 10)}: ${note.trim().replace(/\s*\n\s*/g, " ")}\n`;
+			// Agents copy the dated lines they see, so a note that already starts with a date keeps it and gets no second one.
+			const body = note.trim().replace(/\s*\n\s*/g, " ");
+			const line = `- ${/^\d{4}-\d{2}-\d{2}\b/.test(body) ? "" : `${new Date().toISOString().slice(0, 10)}: `}${body}\n`;
 			const text = `${before}${before === "" || before.endsWith("\n") ? "" : "\n"}${line}`;
 			write(agent, text);
 			const n = lines(text);
