@@ -129,10 +129,14 @@ const unreviewed = (row: ThreadRecord, sha: string) => sha !== row.base && sha !
 
 /**
  * Every instruction for this work, in order: a delegated thread's from its brief on (steers and follow-ups included),
- * another thread's since its last review. Over the cap, the latest stays whole and the earlier ones shrink to a line.
+ * another thread's after what its last review's brief covered. Over the cap, the latest stays whole, earlier ones a line.
  */
 function briefOf(row: ThreadRecord, view: Pick<ContextView, "entries" | "contributions">): string {
-	const from = row.delegatedBy === undefined ? view.entries.findLastIndex((e) => e.kind === REVIEW_ENTRY) + 1 : 0;
+	const card = view.entries.findLastIndex((e) => e.kind === REVIEW_ENTRY);
+	// A request sent during that review comes before its card, so cut where its brief ended (older cards: at the card).
+	const upTo = (view.entries[card]?.data as { upTo?: number } | undefined)?.upTo;
+	const after = upTo === undefined ? card + 1 : view.entries.findIndex((e) => e.id > upTo);
+	const from = row.delegatedBy !== undefined ? 0 : after === -1 ? view.entries.length : after;
 	const asks = view.contributions
 		.slice(from)
 		.flat()
@@ -169,8 +173,12 @@ export function reviewLine(r: Result): string {
 }
 
 type ReviewInput = { thread: number; sha: string };
-type Round = { sha: string; round: number; reviewer?: number; model?: string; family?: string };
-type ReviewState = ({ phase: "review" } & Round) | ({ phase: "fix"; result: Result } & Round) | { phase: "done"; result: Result };
+/** `upTo`: the last thread entry the round's brief covered. */
+type Round = { sha: string; round: number; reviewer?: number; model?: string; family?: string; upTo?: number };
+type ReviewState =
+	| ({ phase: "review" } & Round)
+	| ({ phase: "fix"; result: Result } & Round)
+	| { phase: "done"; result: Result; upTo?: number };
 type Runtime = TaskRuntime<ReviewInput, ReviewState, null, object>;
 /** What a Delegation's runtime offers reviewed(). */
 type Waiter = Pick<Runtime, "conversation" | "snapshot" | "waitForTask"> & {
@@ -223,6 +231,7 @@ export function stompReview(options: ReviewOptions) {
 				const reviewer = (await rt.conversation(cp.reviewer as ConversationId, c))!;
 				const view = await rt.context(thread, c);
 				const { messages } = view;
+				cp = { ...cp, upTo: view.entries.at(-1)?.id };
 				const test = options.repos[row.repo]?.test;
 				const prompt = [
 					cp.round === 1
@@ -254,7 +263,8 @@ export function stompReview(options: ReviewOptions) {
 					rounds: cp.round,
 				};
 				const fix = blocking && cp.round <= options.rounds;
-				await rt.commit(() => next(fix ? { ...cp, phase: "fix", result } : { phase: "done", result }), c);
+				const done = { phase: "done", result, upTo: cp.upTo } as const;
+				await rt.commit(() => next(fix ? { ...cp, phase: "fix", result } : done), c);
 			},
 			fix: async (task, rt, c) => {
 				const thread = task.input.thread as ConversationId;
@@ -272,16 +282,22 @@ export function stompReview(options: ReviewOptions) {
 				await (await author.submit(request, c)).wait(c);
 				const sha = await head(row.worktree);
 				await rt.commit(
-					() => next(sha !== round.sha ? { ...round, phase: "review", sha, round: round.round + 1 } : { phase: "done", result }),
+					() =>
+						next(
+							sha !== round.sha
+								? { ...round, phase: "review", sha, round: round.round + 1 }
+								: { phase: "done", result, upTo: round.upTo },
+						),
 					c,
 				);
 			},
 			done: async (task, rt, c) => {
 				const thread = task.input.thread as ConversationId;
-				const { result } = task.state.checkpoint;
+				const { result, upTo } = task.state.checkpoint;
 				// A write submission adds the card without a turn and without anything in model context.
 				const conversation = (await options.harness().conversation(thread, c))!;
-				await conversation.submit({ type: "write", entry: { kind: REVIEW_ENTRY, data: result }, requestId: `card:${rt.taskId}` }, c);
+				const data = upTo === undefined ? result : { ...result, upTo };
+				await conversation.submit({ type: "write", entry: { kind: REVIEW_ENTRY, data }, requestId: `card:${rt.taskId}` }, c);
 				// Approval is the author's cue to mark its draft PR ready, the only point after which nothing goes to it.
 				// Waiting here puts that turn, and its PR link, in a Delegation's report. Anything else is Brian's call. If the
 				// author committed since, the trigger reviews the new HEAD next, and that review's approval is the cue.

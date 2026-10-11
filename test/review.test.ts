@@ -143,7 +143,10 @@ test("a GPT reviewer blocks a Claude author's commit, the fix goes back, and rou
 	assert.deepEqual(thread.review, { sha: s.head(worktree), verdict: "approved", findings: [NOTE], reviewer: "scripted/gpt-r", family: "openai", rounds: 2 });
 	const counts = await s.counts(desk);
 	assert.deepEqual([counts.tasks, counts.prompts, counts.fixes, counts.approvals], [1, [2], 1, 1]);
-	assert.deepEqual(counts.cards.map((card) => card.data), [thread.review]);
+	assert.deepEqual(
+		counts.cards.map(({ data }) => ({ ...(data as object), upTo: undefined })),
+		[{ ...thread.review, upTo: undefined }],
+	);
 	// Approval comes after every fix round, and is the author's cue to mark its draft PR ready.
 	const texts = await s.userTexts(desk);
 	const approval = texts.at(-1)!;
@@ -212,6 +215,9 @@ test("a commit during a review defers the approval to the review of the new HEAD
 	assert.deepEqual([thread.review!.sha, thread.review!.verdict, (await s.tasks()).length], [s.head(worktree), "approved", 2]);
 	const approvals = (await s.userTexts(desk)).filter((text) => text.includes("] Approved "));
 	assert.deepEqual(approvals.map((text) => /Approved (\w+)/.exec(text)![1]), [s.head(worktree).slice(0, 8)]);
+	// B's request came during A's review, before A's card: it still reaches B's reviewer, and A's doesn't.
+	const briefs = s.reviewers.flatMap((r) => /<brief>\n([^]*)\n<\/brief>/.exec(r.lastUserText)?.[1] ?? []);
+	assert.match(briefs.at(-1)!, /^run: touch b\.txt/);
 });
 
 test("uncommitted changes and turns without a commit start no review", async (t) => {
