@@ -37,8 +37,10 @@ async function start(t: TestContext) {
 	fx.agent("delta", agentFile("Delta", "scripted/w2", "mcp: [broken]\n"));
 	fx.agent("epsilon", agentFile("Epsilon", "scripted/w3", "mcp: [flaky]\n"));
 	const seen: Record<string, string[]> = {};
+	const system: Record<string, string> = {};
 	const respond = (r: Request): Turn => {
 		seen[r.model] = r.tools;
+		system[r.model] = r.system;
 		if (r.lastTool !== undefined) return { text: "done" };
 		const call = /^call: (\w+) (.*)/.exec(r.lastUserText);
 		const command = /^run: (.*)/.exec(r.lastUserText)?.[1];
@@ -56,6 +58,10 @@ async function start(t: TestContext) {
 	return {
 		fx,
 		seen,
+		/** The system prompt of each model's latest request. */
+		system,
+		/** Chat as the UI does; the status a 409 would show in. */
+		chat: async (thread: number, text: string) => (await fx.fetch(`${stomp.url}/api/threads/${thread}/messages`, { method: "POST", body: JSON.stringify({ text }) })).status,
 		state: () => stomp.state(),
 		desk,
 		say,
@@ -73,15 +79,20 @@ async function start(t: TestContext) {
 		logged: () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []),
 		/** How many times fake has started. */
 		started: () => (existsSync(starts) ? readFileSync(starts, "utf8").trim().split("\n").length : 0),
+		/** Kill fake's latest process, as a crash would. */
+		kill: () => process.kill(Number(readFileSync(starts, "utf8").trim().split("\n").at(-1))),
 		error: async (agent: string) => (await stomp.state()).agents.find((a) => a.id === agent)!.error,
+		unavailable: async (agent: string) => (await stomp.state()).agents.find((a) => a.id === agent)!.unavailable,
 	};
 }
 
-test("an agent whose file lists a server has its tools; others don't, and an unknown or broken server is an agent error", async (t) => {
+test("an agent whose file lists a server has its tools; others don't, an unknown server is an agent error and a broken one isn't", async (t) => {
 	const s = await start(t);
 	const agents = (await s.state()).agents;
 	assert.equal(agents.find((a) => a.id === "gamma")!.error, 'unknown MCP server "nope"');
-	assert.match(agents.find((a) => a.id === "delta")!.error!, /^MCP server broken didn't start \(.*ENOENT.*\); retrying$/);
+	const delta = agents.find((a) => a.id === "delta")!;
+	assert.equal(delta.error, undefined);
+	assert.match(delta.unavailable!, /^MCP server broken is unavailable \(.*ENOENT.*\); retrying$/);
 	await s.say(await s.desk("beta"), "hello");
 	await s.tool("fake_wipe", {});
 	assert.match(await s.last(), /Validation failed for tool "fake_wipe"[\s\S]*dataset/, "the tool has the server's schema");
@@ -122,10 +133,15 @@ test("MCP calls are judged like commands: read-only runs, destructive asks, the 
 	assert.deepEqual(s.logged(), ["NAS_SECRET=nas-value", "wiped tank's", "tagged tank blue", "tagged tank outward", "wiped scratch"]);
 });
 
-test("a server that exits starts again on the next call, and agents' shells never see its secrets", async (t) => {
+test("a server that exits is down at once, until it's back on its own; agents' shells never see its secrets", async (t) => {
 	const s = await start(t);
 	await s.tool("fake_exit", {});
 	assert.match(await s.last(), /^mcp fake: .*Connection closed/);
+	assert.equal(await s.unavailable("alpha"), "MCP server fake is unavailable (it disconnected); retrying");
+	await s.say(await s.desk("alpha"), "hello");
+	assert.ok(!s.seen.w1!.includes("fake_read"), "the turn right after has no fake tools");
+	assert.match(s.system.w1!, /MCP server fake is unavailable \(it disconnected\)/);
+	await until(async () => (await s.unavailable("alpha")) === undefined);
 	await s.tool("fake_read", { name: "NAS_SECRET" });
 	assert.equal(await s.last(), "NAS_SECRET=[redacted]");
 	await s.say(await s.desk("alpha"), "run: printenv NAS_SECRET; echo checked");
@@ -133,26 +149,36 @@ test("a server that exits starts again on the next call, and agents' shells neve
 	assert.doesNotMatch(await s.last(), /nas-value/);
 });
 
-// Found in use: the NAS was mid-upgrade when stomp started, and its server stayed failed until stomp restarted.
-test("a server that fails at startup retries on its own, and its agents get their tools once it's up", async (t) => {
+// Found in use: the NAS was mid-upgrade when stomp started, and its server stayed failed until stomp restarted. Then
+// Moneo couldn't even say the NAS was unreachable: an agent with a down server was an error, and chat a 409.
+test("an agent whose server is down chats without its tools, is told why, and has them once it's up", async (t) => {
 	const s = await start(t);
-	assert.match((await s.error("epsilon"))!, /^MCP server flaky didn't start \(.*Connection closed\); retrying$/);
-	rmSync(join(s.fx.root, "down"));
-	await until(async () => (await s.error("epsilon")) === undefined);
+	assert.equal(await s.error("epsilon"), undefined);
+	assert.match((await s.unavailable("epsilon"))!, /^MCP server flaky is unavailable \(.*Connection closed\); retrying$/);
 	const epsilon = await s.desk("epsilon");
+	assert.equal(await s.chat(epsilon, "is the NAS up?"), 200);
+	await until(() => s.system.w3);
+	assert.match(s.system.w3!, /MCP server flaky is unavailable \(.*Connection closed\), so its tools are missing; stomp keeps retrying/);
+	assert.ok(!s.seen.w3!.some((tool) => tool.startsWith("flaky_")));
+	rmSync(join(s.fx.root, "down"));
+	await until(async () => (await s.unavailable("epsilon")) === undefined);
 	await s.say(epsilon, 'call: flaky_read {"name":"HOME"}');
 	assert.match(await s.last(epsilon), /^HOME=/);
 	assert.ok(s.seen.w3!.includes("flaky_read"));
+	assert.doesNotMatch(s.system.w3!, /unavailable/);
 });
 
-test("a server that exits mid-run starts again without waiting for a call, and says it's retrying while it can't", async (t) => {
+test("a server that exits mid-run starts again without waiting for a call; while it can't, its agents chat without its tools", async (t) => {
 	const s = await start(t);
 	assert.equal(s.started(), 1);
 	writeFileSync(join(s.fx.root, "fake-down"), "");
 	await s.tool("fake_exit", {});
-	assert.match(await until(() => s.error("alpha")), /^MCP server fake didn't start \(.*\); retrying$/);
+	assert.match(await until(() => s.unavailable("alpha")), /^MCP server fake is unavailable \(.*\); retrying$/);
+	await s.say(await s.desk("alpha"), "hello");
+	assert.ok(!s.seen.w1!.includes("fake_read"));
+	assert.match(s.system.w1!, /MCP server fake is unavailable/);
 	rmSync(join(s.fx.root, "fake-down"));
-	await until(async () => (await s.error("alpha")) === undefined);
+	await until(async () => (await s.unavailable("alpha")) === undefined);
 	assert.equal(s.started(), 2);
 	await s.tool("fake_read", { name: "NAS_SECRET" });
 	assert.equal(await s.last(), "NAS_SECRET=[redacted]");
@@ -170,12 +196,17 @@ test("reading a process environment with a file tool asks", async (t) => {
 	assert.match(await s.last(), /Brian declined/);
 });
 
-// Found by review: a call judged against a tool's old annotations must not run once a restart changed them.
+// Found by review: a call judged against a tool's old annotations must not run once a restart changed them. Here the
+// server restarts while Brian is still deciding on the call.
 test("a call whose tool changed across a server restart isn't made, and its retry is judged afresh", async (t) => {
 	const s = await start(t);
-	await s.tool("fake_exit", {});
+	const call = s.tool("fake_tag", { dataset: "tank", label: "outward" });
+	const ask = await s.ask();
 	writeFileSync(join(s.fx.root, "tag-is-destructive"), "");
-	await s.tool("fake_tag", { dataset: "tank", label: "blue" });
+	s.kill();
+	await until(() => s.started() === 2 && s.unavailable("alpha").then((u) => u === undefined));
+	assert.equal(await s.answer(ask.id, { decision: "allow" }), 200);
+	await call;
 	assert.match(await s.last(), /^mcp fake: tag changed when the server restarted; call it again/);
 	const retry = s.tool("fake_tag", { dataset: "tank", label: "blue" });
 	assert.equal((await s.ask()).why, "rule: destructive MCP tool");

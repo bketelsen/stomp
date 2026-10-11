@@ -2,13 +2,14 @@
 // `env`, so secrets reach them and never agents' shells. Each is an extension, mcp-<name>, for the agents whose files
 // list it: a tool per MCP tool, and the guard, which judges a call as the command
 // `mcp <server> <tool> [--read-only|--destructive] '<args as JSON>'`, marked from the tool's annotations. Tools are
-// named <server>_<tool> unless already so prefixed, so no two servers' tools share a name. A call that finds its server
-// gone starts it again, once, and re-lists its tools; if that changed the tool's annotations, the call isn't made, so
-// its retry is judged afresh. A server that fails to start or exits tries again on its own, after 1s, doubling to 5
-// minutes, until it's up; agents that list it carry its error, saying so, until then. Secret values never come back in
-// results or errors.
+// named <server>_<tool> unless already so prefixed, so no two servers' tools share a name. A server that fails to start
+// or goes away is down: its extension has no tools, only a line saying it's unavailable and why, so its agents carry on
+// without it and can say so. It tries again on its own, after 1s, doubling to 5 minutes; its tools are back on the next
+// turn once it's up. A call already made when it went starts it again, once, and re-lists its tools; if that changed the
+// tool's annotations, the call isn't made, so its retry is judged afresh. Secret values never come back in results or
+// errors.
 import type { Context } from "@earendil-works/chord";
-import { defineExtension, defineTool, type Extension, type HookRegistration } from "@earendil-works/pi-durable";
+import { defineExtension, defineTool, type Extension, type HookRegistration, section } from "@earendil-works/pi-durable";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { ContentBlock, Tool } from "@modelcontextprotocol/sdk/types.js";
@@ -37,7 +38,7 @@ export type McpHost = {
 	guard(judged: Judged): HookRegistration;
 	/** Into the registry, in place of the server's previous extension. */
 	install(extension: Extension): void;
-	/** A server came up or went down: agents' errors (from `problem`) changed. */
+	/** A server came up or went down: what `down` says changed. */
 	changed(): void;
 };
 
@@ -45,6 +46,8 @@ export function stompMcp(config: StompConfig["mcp"], host: McpHost) {
 	const servers = new Map(
 		Object.keys(config).map((name): [string, Server] => [name, { extension: extensionOf(name, []), retry: backoff(() => void running(name).catch(() => undefined)) }]),
 	);
+	for (const server of servers.values()) host.install(server.extension);
+	let closed = false;
 
 	/** One extension per tool list: its guard knows exactly its tools, so a phase's tools and guard agree. */
 	function extensionOf(server: string, listed: Tool[]): Extension {
@@ -63,7 +66,10 @@ export function stompMcp(config: StompConfig["mcp"], host: McpHost) {
 			const parameters = Type.Unsafe<Record<string, unknown>>(schema);
 			return defineTool({ name, description: t.description ?? t.title ?? t.name, parameters, execute: (args, _api, c) => call(server, t, args, c) });
 		});
-		return defineExtension({ name: `mcp-${server}`, tools, hooks: [host.guard(judged)] }) as Extension;
+		// Rendered each turn: a line while it's down, nothing once it's up.
+		const error = () => servers.get(server)!.error;
+		const unavailable = section(`mcp-${server}`, () => error() && `MCP server ${server} is unavailable (${error()}), so its tools are missing; stomp keeps retrying, and they're back once it's up.`, { tag: false });
+		return defineExtension({ name: `mcp-${server}`, tools, sections: [unavailable], hooks: [host.guard(judged)] }) as Extension;
 	}
 
 	async function call(server: string, judged: Tool, args: Record<string, unknown>, c: Context) {
@@ -88,9 +94,11 @@ export function stompMcp(config: StompConfig["mcp"], host: McpHost) {
 
 	async function connect(name: string, server: Server): Promise<Client> {
 		const client = new Client({ name: "stomp", version: "1.0.0" });
+		// A running server that goes away is down until it's back: its agents lose its tools now, not when a restart fails.
 		client.onclose = () => {
+			if (server.client !== client || closed) return;
 			server.client = undefined;
-			server.retry.failed();
+			lost(name, server, "it disconnected");
 		};
 		try {
 			const { command, args = [], env = {} } = config[name] ?? { command: "" };
@@ -108,22 +116,31 @@ export function stompMcp(config: StompConfig["mcp"], host: McpHost) {
 			return client;
 		} catch (error) {
 			await client.close();
-			const was = server.error;
-			server.error = (error as Error).message;
-			console.error(`[stomp] mcp: ${name}: ${server.error}`);
-			server.retry.failed();
-			if (server.error !== was) host.changed();
+			lost(name, server, (error as Error).message);
 			throw error;
 		}
+	}
+
+	/** Down: its extension without tools (its line says why), the UI told, and another start set for later. */
+	function lost(name: string, server: Server, reason: string) {
+		const was = server.error;
+		server.error = host.redact(reason);
+		console.error(`[stomp] mcp: ${name}: ${server.error}`);
+		if (server.extension.tools?.length) host.install((server.extension = extensionOf(name, [])));
+		server.retry.failed();
+		if (server.error !== was) host.changed();
 	}
 
 	return {
 		/** Level-triggered: start each server that isn't running or waiting to retry. At startup, and when agent files change. */
 		start: () => Promise.all([...servers].filter(([, s]) => !s.retry.waiting).map(([name]) => running(name).catch(() => undefined))),
 		extension: (name: string) => servers.get(name)!.extension,
-		/** For agents' files: why an agent can't have this server, or undefined. */
-		problem: (name: string) => (servers.has(name) ? servers.get(name)!.error && `MCP server ${name} didn't start (${servers.get(name)!.error}); retrying` : `unknown MCP server "${name}"`),
+		/** For agents' files: why an agent can't list this server (it isn't in stomp.yaml), or undefined. */
+		problem: (name: string) => (servers.has(name) ? undefined : `unknown MCP server "${name}"`),
+		/** Why the server's tools are missing now, or undefined while it's up (or yet to start). */
+		down: (name: string) => servers.get(name)?.error && `MCP server ${name} is unavailable (${servers.get(name)!.error}); retrying`,
 		close: () => {
+			closed = true;
 			for (const server of servers.values()) server.retry.stop();
 			return Promise.all([...servers.values()].map((server) => server.client?.close()));
 		},

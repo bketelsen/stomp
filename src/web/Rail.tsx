@@ -132,6 +132,7 @@ function Agent({ agent, threads, current, notebook }: { agent: AgentInfo; thread
 				{fold}
 				<a href={href(agent.deskThread)} className="flex min-w-0 flex-1 flex-col rounded-md px-2 py-1.5 hover:bg-line/50 max-md:min-h-10">
 					{header}
+					{agent.unavailable && <span className="pl-4 text-xs break-words text-warn">{agent.unavailable}</span>}
 				</a>
 			</div>
 			{!folded && (
