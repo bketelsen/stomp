@@ -197,6 +197,21 @@ test("changes_requested with only notes counts as approved, and nothing goes bac
 	assert.deepEqual([(await s.counts(desk)).fixes, (await s.counts(desk)).approvals], [0, 1]);
 });
 
+// Found by review: an approval of A must not cue "mark ready" once the author has committed B on top.
+test("a commit during a review defers the approval to the review of the new HEAD", async (t) => {
+	const s = await startReviewed(t);
+	const desk = await s.desk("alpha");
+	await s.say(desk, `bind; run: ${commit("touch slow.txt", "A")}`);
+	await until(async () => (await s.thread(desk)).status === "reviewing", 10_000);
+	await s.say(desk, `run: ${commit("touch b.txt", "B")}`);
+	const worktree = join(s.repo, "..", "state", "work", `alpha-${desk}`);
+	await until(async () => (await s.settled(desk)).review!.sha === s.head(worktree), 20_000);
+	const thread = await s.settled(desk);
+	assert.deepEqual([thread.review!.sha, thread.review!.verdict, (await s.tasks()).length], [s.head(worktree), "approved", 2]);
+	const approvals = (await s.userTexts(desk)).filter((text) => text.includes("] Approved "));
+	assert.deepEqual(approvals.map((text) => /Approved (\w+)/.exec(text)![1]), [s.head(worktree).slice(0, 8)]);
+});
+
 test("uncommitted changes and turns without a commit start no review", async (t) => {
 	const s = await startReviewed(t);
 	const desk = await s.desk("alpha");

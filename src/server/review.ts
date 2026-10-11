@@ -266,8 +266,10 @@ export function stompReview(options: ReviewOptions) {
 				const conversation = (await options.harness().conversation(thread, c))!;
 				await conversation.submit({ type: "write", entry: { kind: REVIEW_ENTRY, data: result }, requestId: `card:${rt.taskId}` }, c);
 				// Approval is the author's cue to mark its draft PR ready, the only point after which nothing goes to it.
-				// Waiting here puts that turn, and its PR link, in a Delegation's report. Anything else is Brian's call.
-				if (result.verdict === "approved") {
+				// Waiting here puts that turn, and its PR link, in a Delegation's report. Anything else is Brian's call. If the
+				// author committed since, the trigger reviews the new HEAD next, and that review's approval is the cue.
+				const current = await head((await boundRow(rt, thread, c)).worktree).catch(() => undefined);
+				if (result.verdict === "approved" && current === result.sha) {
 					const content = `${FIX_PREFIX}${result.reviewer} (${result.family})] ${APPROVED(short(result.sha))}`;
 					const request = { type: "input", content, whenBusy: "followUp", requestId: `approved:${rt.taskId}` } as const;
 					await (await (await rt.conversation(thread, c))!.submit(request, c)).wait(c);
