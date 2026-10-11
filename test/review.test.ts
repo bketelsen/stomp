@@ -35,10 +35,11 @@ function author(r: Request, repo: string): Turn {
 
 /** The reviewer decides from the diff: a - b blocks, always-blocks always blocks, nits are notes, no-verdict never calls it. */
 function reviewer(r: Request): Turn {
-	const said = r.lastUserText;
+	const said = r.lastUserText.slice(r.lastUserText.indexOf("<diff>"));
 	const verdict = (v: string, findings: JsonObject[]): Turn => ({ calls: [["verdict", { verdict: v, findings }]] });
-	if (said.includes("no-verdict") || said.startsWith("You haven't")) return { text: "Looks fine." };
+	if (said.includes("no-verdict") || r.lastUserText.startsWith("You haven't")) return { text: "Looks fine." };
 	if (said.includes("ask-reviewer") && r.lastTool === undefined) return { bash: "echo reviewer-ran | sh" };
+	if (said.includes("a - b") && said.includes("slowfix")) return verdict("changes_requested", [{ ...BLOCKER, summary: `slowfix: ${BLOCKER.summary}` }]);
 	if (said.includes("a - b")) return verdict("changes_requested", [BLOCKER, NOTE]);
 	if (said.includes("always-blocks")) return verdict("changes_requested", [{ severity: "blocking", summary: "always-blocks is there" }]);
 	if (said.includes("nits")) return verdict("changes_requested", [NOTE, NIT]);
@@ -67,7 +68,7 @@ async function startReviewed(t: TestContext, pool = "[scripted/claude-r, scripte
 	const reviewers: Request[] = [];
 	const models = scriptedModels(
 		(r) => {
-			if (r.model === "claude-a") return author(r, repo);
+			if (r.model === "claude-a") return { ...author(r, repo), delayMs: r.lastUserText.startsWith("[review by") && r.lastUserText.includes("slowfix") ? 1000 : 0 };
 			if (r.model === "w0") {
 				if (r.toolResults || !r.lastUserText.startsWith("delegate ")) return { text: "ok" };
 				return { calls: [["delegate", { agent: "alpha", brief: r.lastUserText.slice(9), repo }]] };
@@ -250,6 +251,20 @@ test("a steer that changes the requirement mid-task reaches the reviewer's brief
 	assert.match(brief, /^2 instructions, oldest first; where they disagree, the later one stands\.\n\n\[1\] run: sleep 1[^]*\n\n\[2\] steer: Brian changed it/);
 });
 
+test("a steer during a fix round reaches the round-2 reviewer", async (t) => {
+	const s = await startReviewed(t);
+	const desk = await s.desk("alpha");
+	const done = s.say(desk, `bind; run: ${BUG.replace("> add.js", "> add.js && touch slowfix.txt")}`);
+	await until(async () => (await s.userTexts(desk)).some((text) => text.startsWith("[review by")), 20_000);
+	const steer = "steer: Brian changed it, open the PR as a draft";
+	await (await s.conversation(desk)).submit({ type: "input", content: steer, whenBusy: "steer" }, ctx);
+	await done;
+	const thread = await s.settled(desk);
+	assert.deepEqual([thread.review!.verdict, thread.review!.rounds], ["approved", 2]);
+	const round2 = s.reviewers.find((r) => r.lastUserText.startsWith("The author answered"))!;
+	assert.match(round2.lastUserText, /<brief>\n2 instructions[^]*\[1\] bind; run: printf[^]*\[2\] steer: Brian changed it/);
+});
+
 test("on a desk thread, the next review's brief starts after the last review", async (t) => {
 	const s = await startReviewed(t);
 	const desk = await s.desk("alpha");
@@ -271,7 +286,7 @@ test("a restart during the review phase: one review, one fix, one card", async (
 	assert.deepEqual([thread.review!.verdict, thread.review!.rounds], ["approved", 2]);
 	const counts = await s.counts(desk);
 	assert.deepEqual([counts.tasks, counts.prompts, counts.fixes, counts.approvals, counts.cards.length], [1, [2], 1, 1, 1]);
-	assert.equal(s.reviewers.filter((r) => r.lastUserText.includes("slow")).length, 2, "the interrupted request ran again");
+	assert.equal(s.reviewers.filter((r) => r.lastUserText.startsWith("Review the commits")).length, 2, "the interrupted request ran again");
 });
 
 test("a reviewer's command asks on the thread it reviews, and Brian's answer reaches the reviewer", async (t) => {

@@ -226,8 +226,10 @@ export function stompReview(options: ReviewOptions) {
 				const test = options.repos[row.repo]?.test;
 				const prompt = [
 					cp.round === 1
-						? `Review the commits on ${row.branch} in ${row.worktree}, ${short(row.base)}..${short(cp.sha)}.\n\n${tag("brief", briefOf(row, view))}`
-						: `The author answered your blocking findings. Review the change again at ${short(cp.sha)}.`,
+						? `Review the commits on ${row.branch} in ${row.worktree}, ${short(row.base)}..${short(cp.sha)}.`
+						: `The author answered your blocking findings. Review the change again at ${short(cp.sha)}, against the brief as it is now.`,
+					// Every round: Brian may have steered the author during a fix.
+					tag("brief", briefOf(row, view)),
 					tag("author-says", textOf(messages.findLast((m) => m.role === "assistant" && textOf(m) !== "")).slice(0, 8000)),
 					...(test ? [`The repo's tests run with: ${test}`] : []),
 					tag("diff", await diffOf(row, cp.sha)),
