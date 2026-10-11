@@ -1,6 +1,6 @@
-// The wiki: a live checkout of a markdown repo (stomp.yaml's `wiki`) at $STOMP_STATE/wiki, rendered per request with no
-// build step. stomp clones it and fast-forwards it from GitHub while it's clean and fully pushed; the agent whose file
-// says `wiki: true` edits, commits and pushes there. stomp never resets or discards: what isn't on GitHub yet shows as
+// The wiki: a live checkout of a markdown repo (stomp.yaml's `wiki`) at $STOMP_STATE/wiki/<owner>/<name>, rendered per
+// request with no build step. stomp clones it and fast-forwards it from GitHub while it's clean and fully pushed; the
+// agent whose file says `wiki: true` edits, commits and pushes there. stomp never resets or discards: what isn't on GitHub yet shows as
 // the page's notice.
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -15,7 +15,6 @@ import { git } from "./workspace.ts";
 
 const run = promisify(execFile);
 const PAGE = /\.(md|markdown)$/i;
-const marked = new Marked({ gfm: true });
 
 /** A page's YAML frontmatter and the markdown after it. Frontmatter that doesn't parse stays in the body. */
 function split(text: string): { meta: Record<string, unknown>; body: string } {
@@ -37,17 +36,43 @@ export type GitHub = (kind: "blob" | "raw", path: string) => string;
 /**
  * Where a link on page `from` goes: a page (a `.md` file, or a path without an extension, like a folder) opens in the
  * viewer; any other file of the repo opens on GitHub, as an image its raw bytes; a URL with a scheme is left alone.
+ * The path is percent-decoded as a URL's is; a `#section` stays on the link.
  */
 export function wikiLink(from: string, href: string, github: GitHub, image = false): string {
 	if (/^([a-z][\w+.-]*:|\/\/)/i.test(href)) return href;
-	const target = href.split(/[?#]/)[0]!;
+	const [, written = "", fragment] = /^([^?#]*)(?:\?[^#]*)?(?:#(.*))?$/s.exec(href)!;
+	let target = written;
+	try {
+		target = decodeURIComponent(written);
+	} catch {}
 	const path = !target ? from : posix.normalize(target.startsWith("/") ? target.slice(1) : posix.join(posix.dirname(from), target)).replace(/^\.\/?/, "");
-	if (!image && (PAGE.test(path) || !/\.[^/]*$/.test(path))) return `#/wiki/${encodePath(path)}`;
-	return github(image ? "raw" : "blob", path);
+	const section = fragment ? `#${fragment}` : "";
+	if (!image && (PAGE.test(path) || !/\.[^/]*$/.test(path))) return `#/wiki/${encodePath(path)}${section}`;
+	return github(image ? "raw" : "blob", path) + section;
 }
 
-/** A page's markdown as HTML, its links rewritten by wikiLink. The browser sanitizes it. */
+/** A heading's id as GitHub makes it: lowercase, punctuation dropped, spaces to hyphens, repeats numbered. */
+export const slugger = () => {
+	const seen = new Map<string, number>();
+	return (text: string) => {
+		const slug = text.toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, "").trim().replace(/\s/g, "-");
+		const n = seen.get(slug) ?? 0;
+		seen.set(slug, n + 1);
+		return n ? `${slug}-${n}` : slug;
+	};
+};
+
+/** A page's markdown as HTML: links rewritten by wikiLink, headings with GitHub's ids. The browser sanitizes it. */
 export function renderPage(path: string, body: string, github: GitHub): string {
+	const slug = slugger();
+	const marked = new Marked({
+		gfm: true,
+		renderer: {
+			heading({ tokens, depth, text }) {
+				return `<h${depth} id="${slug(text)}">${this.parser.parseInline(tokens)}</h${depth}>\n`;
+			},
+		},
+	});
 	const tokens = marked.lexer(body);
 	marked.walkTokens(tokens, (token) => {
 		if (token.type === "link" || token.type === "image") token.href = wikiLink(path, token.href, github, token.type === "image");
@@ -114,13 +139,18 @@ export function stompWiki(repo: string, dir: string, cloned: () => void): Wiki {
 	let failed: string | undefined;
 	let syncing: Promise<void> | undefined;
 	const branch = () => /^ref: refs\/heads\/(.+)$/m.exec(readOptional(join(dir, ".git", "HEAD")))?.[1];
+	/** The checkout's origin as configured, when it isn't `repo` on GitHub: stomp then neither updates it nor vouches for it. */
+	const foreign = async () => {
+		const url = await git(dir, "config", "--get", "remote.origin.url").catch(() => "");
+		return new RegExp(`github\\.com[:/]${repo.replace(/\./g, "\\.")}(\\.git)?/?$`, "i").test(url) ? undefined : url || "none";
+	};
 	const update = async () => {
 		try {
 			if (!existsSync(join(dir, ".git"))) {
 				mkdirSync(dir, { recursive: true });
 				await run("gh", ["repo", "clone", repo, dir, "--", "--quiet"]);
 				cloned();
-			} else {
+			} else if ((await foreign()) === undefined) {
 				await git(dir, "fetch", "--quiet", "origin");
 				// Only a checkout with nothing uncommitted and nothing unpushed moves, so the agent's work is never touched.
 				const idle = !(await git(dir, "status", "--porcelain")) && (await git(dir, "rev-list", "--count", "@{u}..HEAD")) === "0";
@@ -134,12 +164,14 @@ export function stompWiki(repo: string, dir: string, cloned: () => void): Wiki {
 	};
 	const sync = () => (syncing ??= update().finally(() => (syncing = undefined)));
 
-	/** Derived from git each time: commits not pushed, files not committed, and the last failed update. */
+	/** Derived from git each time: a foreign origin, commits not pushed, files not committed, and the last failed update. */
 	async function notice(): Promise<string | undefined> {
 		if (!existsSync(join(dir, ".git"))) return `The wiki isn't cloned yet${failed ? `: ${failed}` : "."}`;
+		const other = await foreign();
 		const [head = "", ...changed] = (await git(dir, "status", "--porcelain", "--branch")).split("\n").filter(Boolean);
 		const [ahead, behind] = [/ahead (\d+)/, /behind (\d+)/].map((re) => Number(re.exec(head)?.[1] ?? 0));
 		const parts = [
+			other && `this checkout's origin is ${other}, not ${repo} on GitHub, so stomp doesn't update it; set it back with git remote set-url`,
 			ahead && `${plural(ahead, "commit")} here not on GitHub yet`,
 			changed.length && `${plural(changed.length, "file")} changed and not committed`,
 			behind && `${plural(behind, "commit")} on GitHub not pulled yet`,

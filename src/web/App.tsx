@@ -22,13 +22,17 @@ const notebookOf = () => {
 	return match ? decodeURIComponent(match[1]!) : undefined;
 };
 
+/** `#/wiki/<path>#<section>`: the page's path and the heading to scroll to, both decoded. */
 const wikiOf = () => {
-	const match = /^#\/wiki(?:\/(.*))?$/.exec(location.hash);
-	try {
-		return match ? decodeURIComponent(match[1] ?? "") : undefined;
-	} catch {
-		return match![1];
-	}
+	const match = /^#\/wiki(?:\/([^#]*))?(?:#(.*))?$/s.exec(location.hash);
+	const decode = (text = "") => {
+		try {
+			return decodeURIComponent(text);
+		} catch {
+			return text;
+		}
+	};
+	return match ? { path: decode(match[1]), section: decode(match[2]) } : undefined;
 };
 
 export function App() {
@@ -133,7 +137,7 @@ export function App() {
 					</div>
 				))}
 				{wiki !== undefined ? (
-					<Wiki path={wiki} />
+					<Wiki path={wiki.path} section={wiki.section} />
 				) : notebook === undefined ? (
 					<Thread disabled={agent?.error ? `${agent.name} failed to load` : undefined} />
 				) : (

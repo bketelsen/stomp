@@ -89,8 +89,9 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 	const later = () => void wired.promise.then(() => changed());
 	const { models, stop: stopServers } = options.models ? { models: options.models, stop: undefined } : await buildModels(config, credentials, later);
 	const family = (modelId: string) => familyOf(modelId, config.families);
-	// The wiki's checkout: cloned in the background, then pulled every 5 minutes. A clone reloads agents, to name its branch.
-	const wiki = config.wiki && stompWiki(config.wiki.repo, join(options.stateDir, "wiki"), later);
+	// The wiki's checkout, one per repo so a rule naming its path names the repo: cloned in the background, then pulled
+	// every 5 minutes. A clone reloads agents, to name its branch.
+	const wiki = config.wiki && stompWiki(config.wiki.repo, join(options.stateDir, "wiki", ...config.wiki.repo.split("/")), later);
 	const stopWiki = wiki?.start(5 * 60_000);
 	const load = () =>
 		loadAgents(options.configDir, {

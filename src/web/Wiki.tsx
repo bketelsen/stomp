@@ -34,7 +34,8 @@ function Pages({ pages, current }: { pages: WikiEntry[]; current?: string }) {
 	);
 }
 
-export function Wiki({ path }: { path: string }) {
+/** `section`: a heading's id to scroll to, or "". */
+export function Wiki({ path, section }: { path: string; section: string }) {
 	const [view, setView] = useState<WikiView>();
 	const [failed, setFailed] = useState<string>();
 	const [pagesOpen, setPagesOpen] = useState(false);
@@ -43,7 +44,7 @@ export function Wiki({ path }: { path: string }) {
 		let current = true;
 		setPagesOpen(false);
 		wikiView(path).then(
-			(v) => current && (setView(v), setFailed(undefined), scroller.current?.scrollTo(0, 0)),
+			(v) => current && (setView(v), setFailed(undefined)),
 			(error: Error) => current && setFailed(`Couldn't load the wiki: ${error.message}`),
 		);
 		return () => {
@@ -51,6 +52,12 @@ export function Wiki({ path }: { path: string }) {
 		};
 	}, [path]);
 	const page = view?.page;
+	// A new page starts at its top, or at its section once it's rendered.
+	useEffect(() => {
+		const heading = section ? document.getElementById(section) : null;
+		if (heading) heading.scrollIntoView({ block: "start" });
+		else scroller.current?.scrollTo(0, 0);
+	}, [page?.path, page?.html, section]);
 	return (
 		<div className="flex min-h-0 flex-1">
 			<nav className="w-60 shrink-0 overflow-y-auto border-r border-line px-2 py-4 max-md:hidden">{view && <Pages pages={view.pages} current={page?.path} />}</nav>
