@@ -48,7 +48,7 @@ export type AgentContext = {
 	notes: string;
 	/** The duties the supervisor added: `$STOMP_STATE/duties.yaml`, a list per agent id. */
 	duties: string;
-	/** Why an agent can't have this MCP server's tools (unknown, or it didn't start), or undefined. */
+	/** Why an agent can't list this MCP server (it isn't in stomp.yaml), or undefined. A server that's down is no error. */
 	mcp(name: string): string | undefined;
 };
 

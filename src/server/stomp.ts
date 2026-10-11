@@ -83,7 +83,7 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 	if (!readOptional(tokenFile).trim()) writeFileSync(tokenFile, `${randomBytes(32).toString("base64url")}\n`, { mode: 0o600 });
 	const token = readFileSync(tokenFile, "utf8").trim();
 	const credentials = new FileCredentialStore(join(options.stateDir, "credentials.json"));
-	// A model server or MCP server that comes up or goes down reloads agents, once reloading is wired below.
+	// A model server that comes up or goes down reloads agents, and an MCP server's refreshes the UI, once both are wired below.
 	const wired = Promise.withResolvers<void>();
 	const later = () => void wired.promise.then(() => changed());
 	const { models, stop: stopServers } = options.models ? { models: options.models, stop: undefined } : await buildModels(config, credentials, later);
@@ -152,7 +152,7 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 		timeoutMs: config.bash.timeoutSeconds * 1000,
 		guard: guardFor,
 		install: (extension) => registry.install(extension),
-		changed: later,
+		changed: () => void wired.promise.then(() => state.changed()),
 	});
 	await mcp.start();
 	let agents = load();
@@ -173,7 +173,8 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 	await syncThreads(harness, agents, extensions);
 	const registered = models.getProviders().map((provider) => provider.id);
 	const providerIds = [...new Set([...Object.keys(SUBSCRIPTIONS), ...Object.keys(config.providers), ...registered])];
-	const state = await watchState(harness, () => agents, models, providerIds, asks, notes, review ? { [REVIEW]: review.progress } : {});
+	const down = (agent: AgentConfig) => agent.mcp.map(mcp.down).filter((d) => d !== undefined).join("; ") || undefined;
+	const state = await watchState(harness, () => agents, models, providerIds, asks, notes, down, review ? { [REVIEW]: review.progress } : {});
 	const stopReviewing = review?.start(harness);
 	harness.resume();
 	const clock = options.dutyClock ?? { tickMs: 60_000, now: Date.now };

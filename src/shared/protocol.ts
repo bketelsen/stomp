@@ -30,6 +30,8 @@ export interface AgentInfo {
 	status: ThreadStatus;
 	/** Set when the agent file failed to load; the agent is listed but can't be chatted with. */
 	error?: string;
+	/** What it's working without now, e.g. "MCP server truenas is unavailable (no route to host); retrying". It still chats. */
+	unavailable?: string;
 	/** Lines in the agent's notebook. */
 	notes: number;
 	/** The agent's scheduled duties and when they last ran. */

@@ -14,10 +14,16 @@ const textOf = (message: Message | undefined): string => {
 };
 
 function requestOf(context: TranscriptContext, model: string): Request {
-	const system = context.messages
-		.filter((m) => m.role === "system")
-		.flatMap((m) => [textOf(m), ...Object.values(m.sections ?? {})])
-		.join("\n");
+	// What the model sees: system messages replayed in order, where a null section and a removed tool are gone.
+	const sections = new Map<string, string>();
+	const tools = new Set<string>();
+	for (const m of context.messages) {
+		if (m.role !== "system") continue;
+		for (const [key, value] of Object.entries(m.sections ?? {})) value === null ? sections.delete(key) : sections.set(key, value);
+		for (const tool of m.toolsRemoved ?? []) tools.delete(tool.name);
+		for (const tool of m.toolsAdded ?? []) tools.add(tool.name);
+	}
+	const system = [...context.messages.filter((m) => m.role === "system").map(textOf), ...sections.values()].join("\n");
 	const rest = context.messages.filter((m) => m.role !== "system");
 	const lastAssistant = rest.findLastIndex((m) => m.role === "assistant");
 	const last = rest.at(-1);
@@ -27,7 +33,7 @@ function requestOf(context: TranscriptContext, model: string): Request {
 		lastUserText: textOf(rest.findLast((m) => m.role === "user")),
 		toolResults: lastAssistant < 0 ? 0 : rest.slice(lastAssistant + 1).filter((m) => m.role === "toolResult").length,
 		...(last?.role === "toolResult" ? { lastTool: last.toolName } : {}),
-		tools: context.messages.flatMap((m) => (m.role === "system" ? (m.toolsAdded ?? []).map((tool) => tool.name) : [])),
+		tools: [...tools],
 	};
 }
 

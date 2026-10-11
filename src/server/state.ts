@@ -38,6 +38,7 @@ export async function watchState(
 	providerIds: readonly string[],
 	asks: Asks,
 	notes: Pick<Notebooks, "lines">,
+	unavailable: (agent: AgentConfig) => string | undefined,
 	describe: Readonly<Record<string, Describe>> = {},
 ): Promise<StateFeed> {
 	const graph = await harness.taskGraph(ctx);
@@ -130,6 +131,7 @@ export async function watchState(
 				deskThread: own.find((thread) => thread.desk)?.id ?? 0,
 				status: (["needs-you", "working", "reviewing"] as const).find((s) => own.some((thread) => thread.status === s)) ?? "idle",
 				...(agent.error === undefined ? {} : { error: agent.error }),
+				...(unavailable(agent) === undefined ? {} : { unavailable: unavailable(agent) }),
 				notes: notes.lines(agent),
 				duties: dutyInfo(agent, duties, Date.now()),
 			};
