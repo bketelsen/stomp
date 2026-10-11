@@ -23,6 +23,7 @@ export const textOf = (content: Content) =>
 
 export const href = (thread: number) => `#/thread/${thread}`;
 export const notebookHref = (agent: string) => `#/agent/${encodeURIComponent(agent)}/notebook`;
+export const wikiHref = (path: string) => `#/wiki/${path.split("/").map(encodeURIComponent).join("/")}`;
 export const titleOf = (thread: ThreadInfo) => (thread.desk ? "desk" : thread.title || `thread ${thread.id}`);
 /** The agent owning a delegated thread's `delegatedBy` thread: the supervisor. */
 export const delegator = (snapshot: StateSnapshot | undefined, thread: ThreadInfo) =>

@@ -240,8 +240,8 @@ export type Judge = ReturnType<typeof createJudge>;
 export function createJudge(options: JudgeOptions) {
 	mkdirSync(options.stateDir, { recursive: true });
 	const log = join(options.stateDir, "judge.log");
-	/** stomp's config dir, and its state dir but for agents' work/, scratch/ and repos/ (unless `..` leaves them). classify resolves paths from the cwd too. */
-	const own = new RegExp(`(\\$STOMP_STATE|\\$\\{STOMP_STATE\\}|/\\.local/share/stomp|${options.stateDir.replace(/\W/g, "\\$&")})(?![\\w.-]|/(work|scratch|repos)(?![\\w.-])(?!\\S*/\\.\\.(?![\\w.-])))|(\\$STOMP_CONFIG|\\$\\{STOMP_CONFIG\\}|/\\.config/stomp|${options.configDir.replace(/\W/g, "\\$&")})(?![\\w.-])`);
+	/** stomp's config dir, and its state dir but for agents' work/, scratch/, repos/ and wiki/ (unless `..` leaves them). classify resolves paths from the cwd too. */
+	const own = new RegExp(`(\\$STOMP_STATE|\\$\\{STOMP_STATE\\}|/\\.local/share/stomp|${options.stateDir.replace(/\W/g, "\\$&")})(?![\\w.-]|/(work|scratch|repos|wiki)(?![\\w.-])(?!\\S*/\\.\\.(?![\\w.-])))|(\\$STOMP_CONFIG|\\$\\{STOMP_CONFIG\\}|/\\.config/stomp|${options.configDir.replace(/\W/g, "\\$&")})(?![\\w.-])`);
 	const backends: [JudgeDecision["by"], (q: Question, signal?: AbortSignal) => Promise<Probabilities>][] = [];
 	if (options.jev) backends.push(["jev", (q, signal) => askJev(options.jev!, q, signal)]);
 	if (options.qwen) backends.push(["qwen", (q, signal) => askQwen(options.qwen!, q, signal)]);

@@ -40,6 +40,8 @@ export async function watchState(
 	notes: Pick<Notebooks, "lines">,
 	unavailable: (agent: AgentConfig) => string | undefined,
 	describe: Readonly<Record<string, Describe>> = {},
+	/** stomp.yaml's wiki repo, if any. */
+	wiki?: string,
 ): Promise<StateFeed> {
 	const graph = await harness.taskGraph(ctx);
 	const status = (thread: number): ThreadStatus => {
@@ -139,7 +141,7 @@ export async function watchState(
 		const providers = await Promise.all(
 			providerIds.map(async (id) => ({ id, loggedIn: (await models.checkAuth(id).catch(() => undefined)) !== undefined })),
 		);
-		return { agents: agentInfos, threads, providers, usage: await usage(), asks: asks.list() };
+		return { agents: agentInfos, threads, providers, usage: await usage(), asks: asks.list(), ...(wiki ? { wiki } : {}) };
 	}
 
 	const listeners = new Set<(state: StateSnapshot) => void>();

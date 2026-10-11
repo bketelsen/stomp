@@ -50,6 +50,8 @@ export type AgentContext = {
 	duties: string;
 	/** Why an agent can't list this MCP server (it isn't in stomp.yaml), or undefined. A server that's down is no error. */
 	mcp(name: string): string | undefined;
+	/** stomp.yaml's wiki: its live checkout, and the branch checked out there once it's cloned. */
+	wiki?: { repo: string; dir: string; branch?: string };
 };
 
 const LEVELS: readonly string[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -142,6 +144,14 @@ export function parseAgent(id: string, text: string, house: string, context: Age
 		agent.mcp = ((meta.mcp ?? []) as unknown[]).map(String);
 		const problem = agent.mcp.map((name) => context.mcp(name)).find(Boolean);
 		if (problem) throw new Error(problem);
+		if (meta.wiki !== undefined && typeof meta.wiki !== "boolean") throw new Error("wiki must be true or false");
+		if (meta.wiki) {
+			const { wiki } = context;
+			if (wiki === undefined) throw new Error("wiki: true needs a wiki in stomp.yaml");
+			if (typeof meta.cwd !== "string") agent.cwd = wiki.dir;
+			const branch = wiki.branch ?? "<the default branch>";
+			agent.instructions += `\n\n## The wiki\n${wiki.dir} is the live checkout of ${wiki.repo}${wiki.branch ? ` on ${wiki.branch}` : ""}. Brian reads it in stomp at /wiki, rendered from these files on every page load, so what you save there is live at once. Work here, not in a workspace: no branch, PR or review. Commit each change and push it straight to ${branch} with exactly \`git -C ${wiki.dir} push origin ${branch}\`, the push Brian's rules let run. stomp pulls GitHub's changes in every few minutes while nothing is uncommitted or unpushed. If a push is rejected, \`git pull --rebase origin ${branch}\` there and push again. Never reset, discard or force-push. If you can't get a change pushed, tell Brian why; the wiki shows him what isn't on GitHub yet.`;
+		}
 		if (!agent.model) throw new Error("model is required");
 		const ref = context.resolveModel(spec);
 		if (typeof ref === "string") throw new Error(ref);

@@ -13,6 +13,7 @@ import type {
 	ServerMessage,
 	StateSnapshot,
 	ThreadInfo,
+	WikiView,
 } from "../shared/protocol.ts";
 import { titleOf } from "./view.ts";
 
@@ -261,3 +262,6 @@ export const judgeLog = async (limit: number) => (await api<{ decisions: JudgeDe
 const notes = (agent: string) => `/agents/${encodeURIComponent(agent)}/notebook`;
 export const notebook = async (agent: string) => (await api<{ text: string }>("GET", notes(agent))).text;
 export const saveNotebook = (agent: string, text: string, base: string) => api("PUT", notes(agent), { text, base });
+
+/** A wiki page and the page list, read from the checkout now. Throws, so the wiki page can say so in place. */
+export const wikiView = (path: string) => api<WikiView>("GET", `/wiki?path=${encodeURIComponent(path)}`);

@@ -76,6 +76,11 @@ reports through Picard. It's waiting for you in the morning.
   their tools. The server gets your secrets; the agent's shell doesn't. MCP tools are judged like
   shell commands: read-only tools run, destructive ones ask, the rest go to the judge. While a
   server is down, its agents work without its tools and are told why; stomp retries it.
+- **A live wiki.** Name a markdown repo in `stomp.yaml` and stomp keeps a checkout of it, served at
+  `/wiki` with a page list, working links between pages and a link to each file on GitHub. The agent
+  whose file says `wiki: true` edits that checkout, so its edits are live on your next page load, and
+  pushes them to the default branch. stomp pulls GitHub's changes in while nothing local is pending,
+  and the page says what isn't on GitHub yet.
 - **Asks you answer in one tap.** Inline cards, a "needs you" list, the tab title, and desktop
   browser notifications. Phone notifications wait on the installable app, which is a later item.
 - **Notebooks and consults.** Agents `remember` things across threads, and you can read and edit
@@ -174,7 +179,8 @@ xdg-open "http://127.0.0.1:7310/#token=$(cat ~/.local/share/stomp/token)"   # on
 - local providers;
 - the review pool, for example `review: { pool: [gpt, claude-sonnet, gemini], rounds: 2 }`;
 - judge thresholds;
-- MCP servers, which an agent's file opts into with `mcp: [truenas]`.
+- MCP servers, which an agent's file opts into with `mcp: [truenas]`;
+- a wiki, `wiki: { repo: owner/name }`, which one agent's file opts into with `wiki: true`.
 
 Your own judge rules go in `~/.config/stomp/rules.yaml`. See [examples/home](examples/home).
 

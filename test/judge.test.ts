@@ -216,6 +216,7 @@ test("stomp's own files, executing awk and sed, curl config files and rm with op
 		`ls ${fx.configDir}`,
 		`cat ${fx.stateDir}/judge.log`,
 		"cat $STOMP_STATE/work/../env",
+		"cat $STOMP_STATE/wiki/../token",
 		"cat <<EOF\n$(gh pr merge 12 --squash)\nEOF",
 		'rm "$HOME" -rf',
 		"rm / --no-preserve-root -r",
@@ -236,6 +237,7 @@ test("stomp's own files, executing awk and sed, curl config files and rm with op
 	for (const command of toModel) assert.equal(await outcome(j, command), "ask fallback", command);
 	const runs = [
 		"ls $STOMP_STATE/work/teg-1",
+		`cd ${fx.stateDir}/wiki && git add docs/hosts/caddy.md && cat ~/.local/share/stomp/wiki/README.md`,
 		"cat /home/stomp/.local/share/stomp/work/teg-1/README.md",
 		`cat ${fx.stateDir}/scratch/teg/notes.txt && ls \${STOMP_STATE}/repos/bketelsen/stomp`,
 		"cat <<'EOF'\n$(gh pr merge 12)\nEOF",

@@ -5,7 +5,8 @@ import { memo, useMemo } from "react";
 const marked = new Marked({ gfm: true, breaks: false });
 
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
-	if (node.tagName === "A") {
+	// In-app links (`#/…`, the wiki's) stay in this tab.
+	if (node.tagName === "A" && !node.getAttribute("href")?.startsWith("#")) {
 		node.setAttribute("target", "_blank");
 		node.setAttribute("rel", "noreferrer noopener");
 	}
@@ -15,4 +16,10 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
 	const html = useMemo(() => DOMPurify.sanitize(marked.parse(text, { async: false })), [text]);
 	return <div className="md min-w-0 break-words" dangerouslySetInnerHTML={{ __html: html }} />;
+});
+
+/** HTML from the server (a wiki page), sanitized, with the same styles. */
+export const Html = memo(function Html({ html }: { html: string }) {
+	const clean = useMemo(() => DOMPurify.sanitize(html), [html]);
+	return <div className="md min-w-0 break-words" dangerouslySetInnerHTML={{ __html: clean }} />;
 });

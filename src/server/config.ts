@@ -23,6 +23,8 @@ export type StompConfig = {
 	judge: { local: number; reversible: number; qwen?: string };
 	/** MCP servers by name: each a stdio process with the server's environment plus `env`. */
 	mcp: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>;
+	/** A markdown repo on GitHub ("owner/name") that stomp keeps a live checkout of, serves at /wiki, and an agent opts into editing. */
+	wiki?: { repo: string };
 };
 
 export const configDir = (): string => process.env.STOMP_CONFIG ?? join(homedir(), ".config", "stomp");
@@ -42,12 +44,14 @@ export function loadConfig(dir: string): StompConfig {
 		repos?: StompConfig["repos"];
 		judge?: Partial<StompConfig["judge"]>;
 		mcp?: StompConfig["mcp"];
+		wiki?: { repo?: string };
 	} = {};
 	try {
 		raw = parse(readFileSync(join(dir, "stomp.yaml"), "utf8")) ?? {};
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error(`stomp.yaml: ${(error as Error).message}`);
 	}
+	if (raw.wiki !== undefined && !/^[\w.-]+\/[\w.-]+$/.test(raw.wiki?.repo ?? "")) throw new Error('stomp.yaml: wiki.repo must be "owner/name"');
 	return {
 		listen: raw.listen ?? "127.0.0.1:7310",
 		providers: raw.providers ?? {},
@@ -58,5 +62,6 @@ export function loadConfig(dir: string): StompConfig {
 		repos: raw.repos ?? {},
 		judge: { local: raw.judge?.local ?? 0.7, reversible: raw.judge?.reversible ?? 0.85, ...(raw.judge?.qwen ? { qwen: raw.judge.qwen } : {}) },
 		mcp: raw.mcp ?? {},
+		...(raw.wiki?.repo ? { wiki: { repo: raw.wiki.repo } } : {}),
 	};
 }
