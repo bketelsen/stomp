@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, join, normalize, sep } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { Conversation, EntryId } from "@earendil-works/pi-durable";
-import type { AskAnswer, JudgeDecision, SendMessageBody, StateSnapshot } from "../shared/protocol.ts";
+import type { AskAnswer, JudgeDecision, SendMessageBody, StateSnapshot, WikiView } from "../shared/protocol.ts";
 import { NOTEBOOK_MAX_BYTES } from "./notebook.ts";
 
 export type Api = {
@@ -23,6 +23,8 @@ export type Api = {
 	decisions(limit: number): JudgeDecision[];
 	/** An agent's notebook, after replacing it with `text` if given; throws a 404 for an unknown agent. */
 	notebook(agent: string, text?: string): string;
+	/** The wiki at `path`; absent when stomp.yaml names none. Throws a 400 for a path outside it. */
+	wiki?(path: string): Promise<WikiView>;
 };
 
 const DECISIONS = ["allow", "always", "deny"];
@@ -94,6 +96,10 @@ async function route(api: Api, req: IncomingMessage, res: ServerResponse, url: U
 		const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit") ?? 50) || 50));
 		return json(res, 200, { decisions: api.decisions(limit) });
 	}
+	if (collection === "wiki" && id === undefined && method === "GET") {
+		if (api.wiki === undefined) throw new HttpError(404, "no wiki: name one in stomp.yaml");
+		return json(res, 200, await api.wiki(url.searchParams.get("path") ?? ""));
+	}
 	if (collection !== "threads" || id === undefined || extra !== undefined) throw new HttpError(404, "not found");
 	if (action === "messages" && method === "POST") {
 		const body = (await readBody(req)) as Partial<SendMessageBody>;
@@ -151,6 +157,8 @@ export function authorized(req: IncomingMessage, token: string): boolean {
 export function httpHandler(api: Api, webDir: string, token: string) {
 	return (req: IncomingMessage, res: ServerResponse): void => {
 		const url = new URL(req.url ?? "/", "http://stomp");
+		// /wiki/<path> is the UI's #/wiki/<path>, which reads the page through the API with the token.
+		if (/^\/wiki(\/|$)/.test(url.pathname)) return void res.writeHead(302, { location: `/#${url.pathname}` }).end();
 		const handled = !url.pathname.startsWith("/api/")
 			? Promise.resolve().then(() => serveStatic(webDir, url, res))
 			: authorized(req, token)

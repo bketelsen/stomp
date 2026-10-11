@@ -1,5 +1,5 @@
 // Layout and routing: the rail, a thin top bar, the open thread and the Work panel. `#/thread/<id>` picks the thread;
-// `#/agent/<id>/notebook` shows an agent's notebook and duties instead.
+// `#/agent/<id>/notebook` shows an agent's notebook and duties instead, and `#/wiki/<path>` a wiki page.
 import { useEffect, useState } from "react";
 import { Notebook } from "./Notebook.tsx";
 import { Rail } from "./Rail.tsx";
@@ -7,6 +7,7 @@ import { Verdict } from "./Review.tsx";
 import { select, useStore } from "./store.ts";
 import { Thread } from "./Thread.tsx";
 import { delegator, href, repoLabel, titleOf, tokens, usageOf } from "./view.ts";
+import { Wiki } from "./Wiki.tsx";
 import { Work } from "./Work.tsx";
 
 /** Tailwind's `md`, where Work is a panel; below it, Work is a sheet. */
@@ -21,12 +22,22 @@ const notebookOf = () => {
 	return match ? decodeURIComponent(match[1]!) : undefined;
 };
 
+const wikiOf = () => {
+	const match = /^#\/wiki(?:\/(.*))?$/.exec(location.hash);
+	try {
+		return match ? decodeURIComponent(match[1] ?? "") : undefined;
+	} catch {
+		return match![1];
+	}
+};
+
 export function App() {
 	const snapshot = useStore((s) => s.snapshot);
 	const thread = useStore((s) => s.thread);
 	const view = useStore((s) => s.view);
 	const connected = useStore((s) => s.connected);
 	const [notebook, setNotebook] = useState(notebookOf);
+	const [wiki, setWiki] = useState(wikiOf);
 	const [railOpen, setRailOpen] = useState(false);
 	const [panel, setPanel] = useState(true);
 	const [sheet, setSheet] = useState(false);
@@ -36,6 +47,7 @@ export function App() {
 		const onHash = () => {
 			select(routed());
 			setNotebook(notebookOf());
+			setWiki(wikiOf());
 			setRailOpen(false);
 			setSheet(false);
 		};
@@ -47,7 +59,7 @@ export function App() {
 	// No thread in the URL: open the supervisor's desk.
 	useEffect(() => {
 		const home = snapshot?.agents.find((a) => a.role === "supervisor" && !a.error) ?? snapshot?.agents.find((a) => !a.error);
-		if (routed() === undefined && notebookOf() === undefined && home) location.replace(`#/thread/${home.deskThread}`);
+		if (routed() === undefined && notebookOf() === undefined && wikiOf() === undefined && home) location.replace(`#/thread/${home.deskThread}`);
 	}, [snapshot]);
 
 	const info = snapshot?.threads.find((t) => t.id === thread);
@@ -69,7 +81,7 @@ export function App() {
 					</button>
 					{/* On phone the agent, delegation and branch drop to a second line, and the thread's usage gives way to the work button. */}
 					<div className="flex min-w-0 flex-1 flex-col md:flex-row md:items-baseline md:gap-2">
-						<span className="truncate leading-tight font-medium md:leading-normal">{info ? titleOf(info) : notebook ? "notebook" : "stomp"}</span>
+						<span className="truncate leading-tight font-medium md:leading-normal">{info ? titleOf(info) : notebook ? "notebook" : wiki !== undefined ? "wiki" : "stomp"}</span>
 						<span className="flex min-w-0 items-baseline gap-2 overflow-hidden text-xs text-muted md:shrink-[3] md:text-sm">
 							{agent && (
 								<span className="shrink-0" title={agent.provider && `${agent.provider} · ${agent.modelId} (${agent.family})`}>
@@ -120,7 +132,9 @@ export function App() {
 						{p.id} is not logged in. run: <code>npm run login {p.id}</code>
 					</div>
 				))}
-				{notebook === undefined ? (
+				{wiki !== undefined ? (
+					<Wiki path={wiki} />
+				) : notebook === undefined ? (
 					<Thread disabled={agent?.error ? `${agent.name} failed to load` : undefined} />
 				) : (
 					agent && <Notebook key={agent.id} agent={agent} />

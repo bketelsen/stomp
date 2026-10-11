@@ -47,3 +47,8 @@ review:
 #     command: truenas-mcp
 #     args: [serve, --enable-writes]
 #     env: { TRUENAS_HOST: truenas.local }
+
+# A markdown repo on GitHub that stomp keeps a live checkout of (in ~/.local/share/stomp/wiki) and serves at /wiki.
+# The agent whose file says `wiki: true` works in that checkout and pushes straight to its default branch, which the
+# judge asks you about unless rules.yaml allows it for that agent: `agents: { keeper: { allow: [git push origin main] } }`.
+# wiki: { repo: you/homewiki }

@@ -146,6 +146,30 @@ export interface StateSnapshot {
 	usage: ProviderUsage[];
 	/** Commands waiting for Brian, oldest first. In memory only: a restart re-asks them. */
 	asks: Ask[];
+	/** The repo stomp.yaml's `wiki` names, when there is one: the UI links to it. */
+	wiki?: string;
+}
+
+//   GET /api/wiki?path=<path>  -> WikiView   400 for a path outside the checkout or through a hidden folder
+
+/**
+ * The wiki, read from its checkout on each request. A path names a page, a page without its `.md`, or a folder's
+ * README.md or index.md; "" is the front page.
+ */
+export interface WikiView {
+	repo: string;
+	/** Every page, by folder (the top first), then frontmatter `order`, then title. */
+	pages: WikiEntry[];
+	/** What isn't on GitHub yet, or why the checkout couldn't update. */
+	notice?: string;
+	/** Absent when the path names no page. Links to other pages are `#/wiki/<path>`; to other files, GitHub. */
+	page?: { path: string; title: string; html: string; github: string };
+}
+
+export interface WikiEntry {
+	path: string;
+	/** Frontmatter `title`, else the first H1, else the file name. */
+	title: string;
 }
 
 /** A command the judge didn't clear. Its id is stable across restarts (task id and call id). */

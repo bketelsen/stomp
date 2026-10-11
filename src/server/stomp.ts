@@ -30,6 +30,7 @@ import { checkPool, REVIEW, reviewPool, stompReview } from "./review.ts";
 import { watchState } from "./state.ts";
 import { stompSupervisor } from "./supervisor.ts";
 import { createThread, listThreads, syncThreads, ThreadsDoc } from "./threads.ts";
+import { stompWiki } from "./wiki.ts";
 import { workspaces, workspaceTool } from "./workspace.ts";
 import { attachBridge } from "./ws.ts";
 
@@ -88,6 +89,9 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 	const later = () => void wired.promise.then(() => changed());
 	const { models, stop: stopServers } = options.models ? { models: options.models, stop: undefined } : await buildModels(config, credentials, later);
 	const family = (modelId: string) => familyOf(modelId, config.families);
+	// The wiki's checkout: cloned in the background, then pulled every 5 minutes. A clone reloads agents, to name its branch.
+	const wiki = config.wiki && stompWiki(config.wiki.repo, join(options.stateDir, "wiki"), later);
+	const stopWiki = wiki?.start(5 * 60_000);
 	const load = () =>
 		loadAgents(options.configDir, {
 			resolveModel: (spec) => resolveModel(models, config.models, spec),
@@ -96,6 +100,7 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 			notes: join(options.stateDir, "notes"),
 			duties: dutiesFile,
 			mcp: (name) => mcp.problem(name),
+			...(wiki ? { wiki: { repo: wiki.repo, dir: wiki.dir, ...(wiki.branch() ? { branch: wiki.branch()! } : {}) } } : {}),
 		});
 	const pool = reviewPool(config.review?.pool ?? [], (spec) => resolveModel(models, config.models, spec), family);
 	const ws = workspaces(options.stateDir);
@@ -174,7 +179,7 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 	const registered = models.getProviders().map((provider) => provider.id);
 	const providerIds = [...new Set([...Object.keys(SUBSCRIPTIONS), ...Object.keys(config.providers), ...registered])];
 	const down = (agent: AgentConfig) => agent.mcp.map(mcp.down).filter((d) => d !== undefined).join("; ") || undefined;
-	const state = await watchState(harness, () => agents, models, providerIds, asks, notes, down, review ? { [REVIEW]: review.progress } : {});
+	const state = await watchState(harness, () => agents, models, providerIds, asks, notes, down, review ? { [REVIEW]: review.progress } : {}, wiki?.repo);
 	const stopReviewing = review?.start(harness);
 	harness.resume();
 	const clock = options.dutyClock ?? { tickMs: 60_000, now: Date.now };
@@ -221,6 +226,7 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 			if (text !== undefined) notes.write(agent, text);
 			return readOptional(agent.notebook);
 		},
+		...(wiki ? { wiki: (path: string) => wiki.view(path) } : {}),
 	};
 
 	// Agent files, house.md and duties.yaml: reload, then bring every thread in line. Serialized, so desks are created once.
@@ -281,6 +287,7 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 				await stopDuties();
 				await harness.close(ctx);
 				await mcp.close();
+				await stopWiki?.();
 			})()),
 	};
 }

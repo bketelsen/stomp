@@ -4,7 +4,7 @@
 import { useState } from "react";
 import type { AgentInfo, DelegationStatus, ThreadInfo, ThreadStatus } from "../shared/protocol.ts";
 import { archive, newThread, toggleAgent, useStore } from "./store.ts";
-import { delegator, href, notebookHref, titleOf } from "./view.ts";
+import { delegator, href, notebookHref, titleOf, wikiHref } from "./view.ts";
 
 const SHOWN = 6;
 
@@ -182,7 +182,14 @@ export function Rail({ open, notebook, onClose }: { open: boolean; notebook?: st
 			<nav
 				className={`fixed inset-y-0 left-0 z-30 flex w-72 shrink-0 flex-col border-r border-line bg-panel pt-[env(safe-area-inset-top)] transition-transform md:static md:z-auto md:translate-x-0 ${open ? "translate-x-0" : "-translate-x-full"}`}
 			>
-				<div className="flex h-11 shrink-0 items-center px-4 font-semibold tracking-tight">stomp</div>
+				<div className="flex h-11 shrink-0 items-center justify-between px-4">
+					<span className="font-semibold tracking-tight">stomp</span>
+					{snapshot?.wiki && (
+						<a href={wikiHref("")} title={snapshot.wiki} className="text-sm text-muted hover:text-fg max-md:min-h-10 max-md:leading-10">
+							wiki
+						</a>
+					)}
+				</div>
 				<div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-2 pb-4">
 					{snapshot === undefined && <p className="px-2 text-sm text-muted">Connecting…</p>}
 					{agents.map((agent) => (
