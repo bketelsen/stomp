@@ -4,7 +4,9 @@
 // `mcp <server> <tool> [--read-only|--destructive] '<args as JSON>'`, marked from the tool's annotations. Tools are
 // named <server>_<tool> unless already so prefixed, so no two servers' tools share a name. A call that finds its server
 // gone starts it again, once, and re-lists its tools; if that changed the tool's annotations, the call isn't made, so
-// its retry is judged afresh. Secret values never come back in results or errors.
+// its retry is judged afresh. A server that fails to start or exits tries again on its own, after 1s, doubling to 5
+// minutes, until it's up; agents that list it carry its error, saying so, until then. Secret values never come back in
+// results or errors.
 import type { Context } from "@earendil-works/chord";
 import { defineExtension, defineTool, type Extension, type HookRegistration } from "@earendil-works/pi-durable";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -15,10 +17,12 @@ import type { StompConfig } from "./config.ts";
 
 /** A guard's command for a call, with where it runs when that isn't the caller's cwd; undefined for a call it doesn't judge. */
 export type Judged = (name: string, args: Record<string, unknown>) => string | { command: string; cwd: string } | undefined;
-type Server = { client?: Client; starting?: Promise<Client>; error?: string; extension: Extension; tools?: Map<string, Tool> };
+type Server = { client?: Client; starting?: Promise<Client>; error?: string; extension: Extension; tools?: Map<string, Tool>; retry?: NodeJS.Timeout; failures: number };
 
 const CAP = 50_000;
 const START_MS = 15_000;
+const RETRY_MS = 1_000;
+const MAX_RETRY_MS = 300_000;
 const reply = (text: string, isError = false) => ({ content: [{ type: "text" as const, text }], isError });
 const quote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
 const marker = ({ annotations: a }: Tool) => (a?.readOnlyHint === true ? " --read-only" : a?.destructiveHint === true ? " --destructive" : "");
@@ -34,10 +38,13 @@ export type McpHost = {
 	guard(judged: Judged): HookRegistration;
 	/** Into the registry, in place of the server's previous extension. */
 	install(extension: Extension): void;
+	/** A server came up or went down: agents' errors (from `problem`) changed. */
+	changed(): void;
 };
 
 export function stompMcp(config: StompConfig["mcp"], host: McpHost) {
-	const servers = new Map(Object.keys(config).map((name): [string, Server] => [name, { extension: extensionOf(name, []) }]));
+	const servers = new Map(Object.keys(config).map((name): [string, Server] => [name, { extension: extensionOf(name, []), failures: 0 }]));
+	let closed = false;
 
 	/** One extension per tool list: its guard knows exactly its tools, so a phase's tools and guard agree. */
 	function extensionOf(server: string, listed: Tool[]): Extension {
@@ -81,7 +88,10 @@ export function stompMcp(config: StompConfig["mcp"], host: McpHost) {
 
 	async function connect(name: string, server: Server): Promise<Client> {
 		const client = new Client({ name: "stomp", version: "1.0.0" });
-		client.onclose = () => (server.client = undefined);
+		client.onclose = () => {
+			server.client = undefined;
+			retry(name, server);
+		};
 		try {
 			const { command, args = [], env = {} } = config[name] ?? { command: "" };
 			const environment = Object.fromEntries(Object.entries({ ...process.env, ...env }).filter((e): e is [string, string] => e[1] !== undefined));
@@ -89,24 +99,44 @@ export function stompMcp(config: StompConfig["mcp"], host: McpHost) {
 			let page = await client.listTools({}, { timeout: START_MS });
 			const listed = [...page.tools];
 			while (page.nextCursor) listed.push(...(page = await client.listTools({ cursor: page.nextCursor }, { timeout: START_MS })).tools);
-			Object.assign(server, { client, error: undefined, tools: new Map(listed.map((t) => [t.name, t])), extension: extensionOf(name, listed) });
+			const was = server.error;
+			clearTimeout(server.retry);
+			Object.assign(server, { client, error: undefined, failures: 0, retry: undefined, tools: new Map(listed.map((t) => [t.name, t])), extension: extensionOf(name, listed) });
 			host.install(server.extension);
 			console.log(`[stomp] mcp: ${name} (${listed.length} tools)`);
+			if (was !== undefined) host.changed();
 			return client;
 		} catch (error) {
 			await client.close();
+			const was = server.error;
 			server.error = (error as Error).message;
 			console.error(`[stomp] mcp: ${name}: ${server.error}`);
+			retry(name, server);
+			if (server.error !== was) host.changed();
 			throw error;
 		}
 	}
 
+	/** Start it again later, unless that's already set (or stomp is closing); the wait doubles with each failure. */
+	function retry(name: string, server: Server) {
+		if (closed || server.retry) return;
+		const ms = Math.min(RETRY_MS * 2 ** server.failures++, MAX_RETRY_MS);
+		server.retry = setTimeout(() => {
+			server.retry = undefined;
+			running(name).catch(() => undefined);
+		}, ms);
+	}
+
 	return {
-		/** Level-triggered: start each server that isn't running. At startup, and when agent files change. */
-		start: () => Promise.all([...servers.keys()].map((name) => running(name).catch(() => undefined))),
+		/** Level-triggered: start each server that isn't running or waiting to retry. At startup, and when agent files change. */
+		start: () => Promise.all([...servers].filter(([, s]) => !s.retry).map(([name]) => running(name).catch(() => undefined))),
 		extension: (name: string) => servers.get(name)!.extension,
 		/** For agents' files: why an agent can't have this server, or undefined. */
-		problem: (name: string) => (servers.has(name) ? servers.get(name)!.error && `MCP server ${name} didn't start: ${servers.get(name)!.error}` : `unknown MCP server "${name}"`),
-		close: () => Promise.all([...servers.values()].map((server) => server.client?.close())),
+		problem: (name: string) => (servers.has(name) ? servers.get(name)!.error && `MCP server ${name} didn't start (${servers.get(name)!.error}); retrying` : `unknown MCP server "${name}"`),
+		close: () => {
+			closed = true;
+			for (const server of servers.values()) clearTimeout(server.retry);
+			return Promise.all([...servers.values()].map((server) => server.client?.close()));
+		},
 	};
 }

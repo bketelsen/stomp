@@ -1,10 +1,16 @@
 // A fake MCP server on stdio: a read-only tool, a destructive one, an unannotated one, and one that makes it exit.
-// Every call that reaches it is a line in $FAKE_LOG.
+// Every call that reaches it is a line in $FAKE_LOG, and every start one in $FAKE_STARTS. While $FAKE_DOWN exists it
+// exits at startup, like a server whose host is unreachable.
 import { appendFileSync, existsSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
+if (existsSync(process.env.FAKE_DOWN ?? "")) {
+	console.error("no route to host");
+	process.exit(1);
+}
+if (process.env.FAKE_STARTS) appendFileSync(process.env.FAKE_STARTS, "started\n");
 const server = new McpServer({ name: "fake", version: "1.0.0" });
 const reply = (text: string) => (appendFileSync(process.env.FAKE_LOG!, `${text}\n`), { content: [{ type: "text" as const, text }] });
 const dataset = { dataset: z.string() };

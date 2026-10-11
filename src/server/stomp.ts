@@ -143,12 +143,15 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 	if (review) registry.install(review.extension);
 	// Agents' shells don't inherit the server's secrets, and MCP results never carry their values.
 	const shellEnv = hiddenEnv(options.stateDir);
+	// A server that comes up or goes down reloads agents, once reloading is wired below.
+	const wired = Promise.withResolvers<void>();
 	const secretValues = Object.keys(shellEnv).flatMap((name) => (process.env[name]?.length ?? 0) >= 8 ? [process.env[name]!] : []);
 	const mcp = stompMcp(config.mcp, {
 		redact: (text) => secretValues.reduce((out, value) => out.replaceAll(value, "[redacted]"), text),
 		timeoutMs: config.bash.timeoutSeconds * 1000,
 		guard: guardFor,
 		install: (extension) => registry.install(extension),
+		changed: () => void wired.promise.then(() => changed()),
 	});
 	await mcp.start();
 	let agents = load();
@@ -240,6 +243,7 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 		watch(join(options.configDir, "agents"), (_event, file) => (file === null || file.endsWith(".md")) && changed()),
 		watch(options.stateDir, (_event, file) => file === "duties.yaml" && changed()),
 	];
+	wired.resolve();
 
 	const server = createServer(httpHandler(api, options.webDir ?? WEB_DIR, token));
 	const listen = options.listen ?? config.listen;
