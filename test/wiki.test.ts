@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { StateSnapshot, WikiView } from "../src/shared/protocol.ts";
 import { loadAgents } from "../src/server/agents.ts";
+import { createJudge } from "../src/server/judge.ts";
 import { startStomp } from "../src/server/stomp.ts";
 import { locate, renderPage, stompWiki, wikiLink } from "../src/server/wiki.ts";
 import { agentFile, fixture, until } from "./support/fixture.ts";
@@ -146,7 +147,7 @@ test("the wiki is served from its live checkout behind the token, and the wiki a
 	});
 	const [k, o] = [agents.find((a) => a.id === "keeper")!, agents.find((a) => a.id === "other")!];
 	assert.equal(k.cwd, dir);
-	assert.match(k.instructions, new RegExp(`## The wiki\\n${dir} is the live checkout of owner/homewiki on main.*cd ${dir} && git push origin main`, "s"));
+	assert.match(k.instructions, new RegExp(`## The wiki\\n${dir} is the live checkout of owner/homewiki on main.*\`git -C ${dir} push origin main\``, "s"));
 	assert.doesNotMatch(o.instructions, /The wiki/);
 
 	// An edit in the checkout is live on the next load, and the notice says what isn't on GitHub yet.
@@ -202,4 +203,32 @@ test("syncing pulls GitHub's changes into a clean checkout, and leaves local edi
 	git(dir, "remote", "set-url", "origin", join(f.root, "gone.git"));
 	await wiki.sync();
 	assert.match((await wiki.view("")).notice ?? "", /^updating from GitHub failed: .*gone\.git/);
+});
+
+test("with the one rule the wiki agent's file names, her edit-commit-push of the wiki never asks; other pushes to main still do", async (t) => {
+	const f = fixture();
+	t.after(f.cleanup);
+	const dir = join(f.stateDir, "wiki");
+	mkdirSync(dir, { recursive: true });
+	git(dir, "init", "-q", "-b", "main");
+	git(dir, "commit", "-q", "--allow-empty", "-m", "first");
+	writeFileSync(join(f.configDir, "rules.yaml"), `agents:\n  keeper:\n    allow:\n      - git -C ${dir} push origin main\n`);
+	const judge = createJudge({ configDir: f.configDir, stateDir: f.stateDir, local: 0.7, reversible: 0.85 });
+	const decide = async (agent: string, command: string, cwd = dir) => {
+		const v = await judge.decide({ thread: 1, agent, command, cwd });
+		return `${v.outcome} ${v.by}`;
+	};
+	const publish = `cd ${dir} && git add -A && git commit -qm "caddy: port 8443" && git -C ${dir} push origin main`;
+	assert.equal(await decide("keeper", publish), "run allow-rule");
+	assert.equal(await decide("keeper", `cd ${dir} && git pull --rebase origin main`), "run allow-rule");
+	assert.equal(await decide("keeper", `cat > ${dir}/docs/x.md <<'EOF'\n# x\nEOF`), "run allow-rule");
+	// Nothing broader: other agents, other repos and other pushes go to the judge's usual path, which asks here.
+	const asks = [
+		await decide("other", publish),
+		await decide("keeper", "git push origin main", join(f.stateDir, "work", "keeper-1")),
+		await decide("keeper", `git -C ${f.stateDir}/work/keeper-1 push origin main`),
+		await decide("keeper", `git -C ${dir} push --force origin main`),
+		await decide("keeper", `git -C ${dir} push origin main:other`),
+	];
+	assert.deepEqual(asks.map((a) => a.split(" ")[0]), Array(5).fill("ask"));
 });
