@@ -79,6 +79,8 @@ async function start(t: TestContext) {
 		logged: () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []),
 		/** How many times fake has started. */
 		started: () => (existsSync(starts) ? readFileSync(starts, "utf8").trim().split("\n").length : 0),
+		/** Kill fake's latest process, as a crash would. */
+		kill: () => process.kill(Number(readFileSync(starts, "utf8").trim().split("\n").at(-1))),
 		error: async (agent: string) => (await stomp.state()).agents.find((a) => a.id === agent)!.error,
 		unavailable: async (agent: string) => (await stomp.state()).agents.find((a) => a.id === agent)!.unavailable,
 	};
@@ -131,10 +133,15 @@ test("MCP calls are judged like commands: read-only runs, destructive asks, the 
 	assert.deepEqual(s.logged(), ["NAS_SECRET=nas-value", "wiped tank's", "tagged tank blue", "tagged tank outward", "wiped scratch"]);
 });
 
-test("a server that exits starts again on the next call, and agents' shells never see its secrets", async (t) => {
+test("a server that exits is down at once, until it's back on its own; agents' shells never see its secrets", async (t) => {
 	const s = await start(t);
 	await s.tool("fake_exit", {});
 	assert.match(await s.last(), /^mcp fake: .*Connection closed/);
+	assert.equal(await s.unavailable("alpha"), "MCP server fake is unavailable (it disconnected); retrying");
+	await s.say(await s.desk("alpha"), "hello");
+	assert.ok(!s.seen.w1!.includes("fake_read"), "the turn right after has no fake tools");
+	assert.match(s.system.w1!, /MCP server fake is unavailable \(it disconnected\)/);
+	await until(async () => (await s.unavailable("alpha")) === undefined);
 	await s.tool("fake_read", { name: "NAS_SECRET" });
 	assert.equal(await s.last(), "NAS_SECRET=[redacted]");
 	await s.say(await s.desk("alpha"), "run: printenv NAS_SECRET; echo checked");
@@ -189,12 +196,17 @@ test("reading a process environment with a file tool asks", async (t) => {
 	assert.match(await s.last(), /Brian declined/);
 });
 
-// Found by review: a call judged against a tool's old annotations must not run once a restart changed them.
+// Found by review: a call judged against a tool's old annotations must not run once a restart changed them. Here the
+// server restarts while Brian is still deciding on the call.
 test("a call whose tool changed across a server restart isn't made, and its retry is judged afresh", async (t) => {
 	const s = await start(t);
-	await s.tool("fake_exit", {});
+	const call = s.tool("fake_tag", { dataset: "tank", label: "outward" });
+	const ask = await s.ask();
 	writeFileSync(join(s.fx.root, "tag-is-destructive"), "");
-	await s.tool("fake_tag", { dataset: "tank", label: "blue" });
+	s.kill();
+	await until(() => s.started() === 2 && s.unavailable("alpha").then((u) => u === undefined));
+	assert.equal(await s.answer(ask.id, { decision: "allow" }), 200);
+	await call;
 	assert.match(await s.last(), /^mcp fake: tag changed when the server restarted; call it again/);
 	const retry = s.tool("fake_tag", { dataset: "tank", label: "blue" });
 	assert.equal((await s.ask()).why, "rule: destructive MCP tool");
