@@ -217,11 +217,14 @@ hooks can't create tasks, and `onYield` isn't airtight.
    - writes `review = {sha, verdict, findings, reviewer, rounds}` into `stomp.threads`;
    - appends an `app.review` entry to the thread, a write submission that doesn't trigger a turn,
      which the UI renders as a card. Tasks can't make write submissions, so this goes through the
-     host's Harness, wired in before `resume()`. The UI identifies cards by `kind`.
+     host's Harness, wired in before `resume()`. The UI identifies cards by `kind`;
+   - if approved, tells the author so (`requestId: approved:<task>`) and waits for that turn: the
+     author marks its draft PR ready then. Agents open PRs as drafts, GitHub won't merge a draft,
+     and "ready" means reviewed and final. Fix rounds all happen before `done`, so none can land on
+     a ready PR. (PR #10 was opened mid-review, merged, and missed its fix round.)
 
 The verdict, its notes, and the author's replies to the reviewer travel with the report. The review
-card sits in the thread. Getting the verdict into a PR the agent already opened is a later item: it
-needs either an extra author turn per review or stomp commenting on PRs itself. Review never blocks me
+card sits in the thread. Without approval the PR stays a draft. Review never blocks me
 from merging, pushing or moving on. After two rounds, open findings are mine to decide. Abort and
 `cancel` stop a thread's review along with its run.
 

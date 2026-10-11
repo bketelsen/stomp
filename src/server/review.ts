@@ -69,8 +69,10 @@ cases without a concrete failure in normal use. Each blocking finding states the
 Don't ask for work beyond the brief. Approving with notes is normal and expected.
 Finish by calling verdict once.`;
 const NUDGE = "You haven't called verdict. Call it now with your verdict and findings.";
-/** Fix requests start with this, so a later review's brief skips them. */
+/** Fix requests and approvals start with this, so a later review's brief skips them. */
 const FIX_PREFIX = "[review by ";
+const APPROVED = (sha: string) =>
+	`Approved ${sha}. If this work has a draft PR, push and mark it ready now (gh pr ready). That's final: commit nothing more to it.`;
 
 /** The row's review: protocol.ts's ReviewRecord as a plain type a doc and an entry can hold. */
 type Result = NonNullable<ThreadRecord["review"]>;
@@ -263,6 +265,15 @@ export function stompReview(options: ReviewOptions) {
 				// A write submission adds the card without a turn and without anything in model context.
 				const conversation = (await options.harness().conversation(thread, c))!;
 				await conversation.submit({ type: "write", entry: { kind: REVIEW_ENTRY, data: result }, requestId: `card:${rt.taskId}` }, c);
+				// Approval is the author's cue to mark its draft PR ready, the only point after which nothing goes to it.
+				// Waiting here puts that turn, and its PR link, in a Delegation's report. Anything else is Brian's call. If the
+				// author committed since, the trigger reviews the new HEAD next, and that review's approval is the cue.
+				const current = await head((await boundRow(rt, thread, c)).worktree).catch(() => undefined);
+				if (result.verdict === "approved" && current === result.sha) {
+					const content = `${FIX_PREFIX}${result.reviewer} (${result.family})] ${APPROVED(short(result.sha))}`;
+					const request = { type: "input", content, whenBusy: "followUp", requestId: `approved:${rt.taskId}` } as const;
+					await (await (await rt.conversation(thread, c))!.submit(request, c)).wait(c);
+				}
 				await rt.commit(async (tx) => {
 					const row = (await tx.doc(ThreadsDoc)).threads[thread];
 					if (row !== undefined) row.review = result;

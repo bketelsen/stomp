@@ -50,7 +50,7 @@ export const workspaceTool = (ws: Workspaces) =>
 	defineTool({
 		name: "workspace",
 		description:
-			"Get a git worktree of your own for a repo: \"owner/name\" on GitHub, or an absolute path to a local repo. It starts on a new branch from the default branch's tip and becomes your working directory. Commit there when a unit of work is done: another model reviews your commits. Calling it again returns the same worktree.",
+			"Get a git worktree of your own for a repo: \"owner/name\" on GitHub, or an absolute path to a local repo. It starts on a new branch from the default branch's tip and becomes your working directory. Commit there when a unit of work is done: another model reviews your commits. Open a PR as a draft; stomp tells you when review approves, and only then mark it ready. Calling it again returns the same worktree.",
 		parameters: Type.Object({ repo: Type.String({ description: '"owner/name" or an absolute path' }) }),
 		execute: async ({ repo }, api, c) => {
 			const thread = api.conversationId as ConversationId;
