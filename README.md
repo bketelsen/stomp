@@ -128,8 +128,9 @@ The supervisor's file adds `role: supervisor`. House rules shared by every agent
 
 `model` can be a list, tried in order on every request: `model: [qwen, claude-sonnet-copilot]`
 answers from the local model when it's up and from Copilot when it's down or a subscription hits
-its limit. A model that's unreachable when stomp starts is skipped until the next start. Review
-picks a reviewer outside every family in the list.
+its limit. A server in `providers` that doesn't answer, at startup or when a request to it fails, is
+skipped and asked again in the background (after 1s, doubling to 5 minutes) until it's back; then
+it's used from the next request. Review picks a reviewer outside every family in the list.
 
 ## Getting started
 

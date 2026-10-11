@@ -18,6 +18,7 @@ import { githubCopilotProvider } from "@earendil-works/pi-ai/providers/github-co
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 import type { ModelRef } from "@earendil-works/pi-durable";
+import { backoff } from "./backoff.ts";
 import type { StompConfig } from "./config.ts";
 
 /** `openai` is "Sign in with ChatGPT"; `openai-codex` is the legacy route. */
@@ -31,18 +32,50 @@ export type Subscription = keyof typeof SUBSCRIPTIONS;
 
 type ServerModel = { id: string; context_length?: number; max_model_len?: number; max_tokens_default?: number };
 
-/** A keyless OpenAI-compatible server, its models fetched now. Undefined (with a warning) when it's unreachable. */
-export async function openAICompatibleProvider(id: string, url: string): Promise<Provider | undefined> {
-	const baseUrl = url.replace(/\/+$/, "");
-	let listed: ServerModel[];
-	try {
-		const response = await fetch(`${baseUrl}/models`, { signal: AbortSignal.timeout(5000) });
-		if (!response.ok) throw new Error(`HTTP ${response.status}`);
-		listed = ((await response.json()) as { data?: ServerModel[] }).data ?? [];
-	} catch (error) {
-		console.error(`[stomp] provider ${id}: ${baseUrl}/models unreachable (${(error as Error).message})`);
-		return undefined;
-	}
+/**
+ * The keyless OpenAI-compatible servers in stomp.yaml. A server's models are registered while its `/models` answers. One
+ * that doesn't, at startup or when a request to it fails before any output, is unregistered and asked again in the
+ * background (backoff.ts) until it answers. `changed` is called when one goes or comes back, so agents resolve their
+ * models again; each change is logged once. Returns what stops the retries.
+ */
+export async function watchServers(models: MutableModels, config: Pick<StompConfig, "providers" | "models">, changed: () => void, firstMs?: number) {
+	const watched = Object.entries(config.providers).map(([id, { baseUrl: url }]) => {
+		const baseUrl = url.replace(/\/+$/, "");
+		const custom = Object.fromEntries(Object.entries(config.models).filter(([, e]) => typeof e !== "string" && e.ref.startsWith(`${id}/`)));
+		let up: boolean | undefined;
+		let probing: Promise<void> | undefined;
+		const probe = (): Promise<void> =>
+			(probing ??= (async () => {
+				try {
+					const response = await fetch(`${baseUrl}/models`, { signal: AbortSignal.timeout(5000) });
+					if (!response.ok) throw new Error(`HTTP ${response.status}`);
+					const listed = ((await response.json()) as { data?: ServerModel[] }).data ?? [];
+					retry.ok();
+					models.setProvider(serverProvider(id, baseUrl, listed, () => void probe()));
+					addCustomModels(models, custom);
+					if (up === false) console.log(`[stomp] provider ${id}: ${baseUrl} is back`);
+					if (up === false) changed();
+					up = true;
+				} catch (error) {
+					retry.failed();
+					if (up === false) return;
+					models.deleteProvider(id);
+					console.error(`[stomp] provider ${id}: ${baseUrl}/models unreachable (${(error as Error).message}); retrying in the background`);
+					if (up) changed();
+					up = false;
+				}
+			})().finally(() => (probing = undefined)));
+		const retry = backoff(() => void probe(), firstMs);
+		return { probe, retry };
+	});
+	await Promise.all(watched.map((server) => server.probe()));
+	return () => {
+		for (const server of watched) server.retry.stop();
+	};
+}
+
+/** A server's models. A request that fails before any output calls `failed`, to ask the server whether it's still up. */
+function serverProvider(id: string, baseUrl: string, listed: ServerModel[], failed: () => void): Provider {
 	const models: Model<"openai-completions">[] = listed.map((m) => ({
 		id: m.id,
 		name: m.id,
@@ -63,6 +96,11 @@ export async function openAICompatibleProvider(id: string, url: string): Promise
 			supportsUsageInStreaming: true,
 		},
 	}));
+	const api = openAICompletionsApi();
+	const watch = (events: AssistantMessageEventStream) => {
+		void events.result().then((m) => m.stopReason === "error" && m.content.length === 0 && failed(), () => undefined);
+		return events;
+	};
 	return createProvider({
 		id,
 		name: `${id} (${baseUrl})`,
@@ -70,7 +108,7 @@ export async function openAICompatibleProvider(id: string, url: string): Promise
 		// Always configured; the OpenAI SDK needs a non-empty key.
 		auth: { apiKey: { name: "none", resolve: async () => ({ auth: { apiKey: "none" }, source: "keyless" }) } },
 		models,
-		api: openAICompletionsApi(),
+		api: { ...api, stream: (m, c, o) => watch(api.stream(m, c, o)), streamSimple: (m, c, o) => watch(api.streamSimple(m, c, o)) },
 	});
 }
 
@@ -102,15 +140,14 @@ export function addCustomModels(models: MutableModels, entries: StompConfig["mod
 	}
 }
 
-export async function buildModels(config: StompConfig, credentials: CredentialStore): Promise<MutableModels> {
+/** The subscriptions, models the catalog doesn't know, and the servers in stomp.yaml, watched (see watchServers). */
+export async function buildModels(config: StompConfig, credentials: CredentialStore, changed: () => void) {
 	const models = createModels({ credentials });
 	for (const make of Object.values(SUBSCRIPTIONS)) models.setProvider(make());
-	for (const [id, { baseUrl }] of Object.entries(config.providers)) {
-		const provider = await openAICompatibleProvider(id, baseUrl);
-		if (provider) models.setProvider(provider);
-	}
+	// Servers' own custom models are added as each comes up.
 	addCustomModels(models, config.models);
-	return models;
+	const stop = await watchServers(models, config, changed);
+	return { models, stop };
 }
 
 function splitRef(ref: string): [string, string | undefined] {
@@ -133,12 +170,15 @@ export const linksOf = (ref: ModelRef): ModelRef[] =>
 
 /**
  * Each request goes to the first link whose provider is registered, and a link that fails before any output hands it to
- * the next. A failure after output is the request's: pi-durable's retry starts again at the first link. Nothing is
- * remembered, so a link that's down costs a refused connection per request, and it's used again once it's back.
+ * the next. A failure after output is the request's: pi-durable's retry starts again at the first link. A server that's
+ * down isn't registered (see watchServers), so it's skipped until it's back. With no link registered, the request fails
+ * with the first link's "Unknown provider".
  */
 function fallbackProvider(models: Models, chains: Model<Api>[]): Provider {
 	const each = (model: Model<Api>, request: (link: Model<Api>) => AssistantMessageEventStream) => {
-		const links = linksOf({ provider: FALLBACK, modelId: model.id }).flatMap((ref) => models.getModel(ref.provider, ref.modelId) ?? []);
+		const refs = linksOf({ provider: FALLBACK, modelId: model.id });
+		const live = refs.flatMap((ref) => models.getModel(ref.provider, ref.modelId) ?? []);
+		const links = live.length ? live : [{ ...model, provider: refs[0]!.provider, id: refs[0]!.modelId }];
 		const out = createAssistantMessageEventStream();
 		void (async () => {
 			for (const link of links) {
@@ -183,7 +223,7 @@ function refOf(aliases: StompConfig["models"], spec: string): ModelRef | undefin
 
 /**
  * An alias or `provider/modelId`, resolved to a model `models` knows, or why not. A list is a fallback model: a link whose
- * provider isn't registered (a server that was down at startup) is skipped, but one must resolve.
+ * provider isn't registered (a server that's down) is skipped, but one must resolve.
  */
 export function resolveModel(models: MutableModels, aliases: StompConfig["models"], spec: string | readonly string[]): ModelRef | string {
 	const refs: ModelRef[] = [];
