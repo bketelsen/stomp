@@ -306,8 +306,9 @@ export function createJudge(options: JudgeOptions) {
 			const judged = segs.map((seg) => [seg, classify(seg, rules, onMain, q.cwd)] as const);
 			const rule = judged.find((j): j is [Segment, string] => typeof j[1] === "string")?.[1];
 			let read: Read = { outcome: "ask", by: "ask-rule", detail: rule, why: `rule: ${rule}` };
-			// The model never re-judges what Brian's own rules allow: each such command reads as `true`.
-			const mine = segs.filter((seg) => [...rules.learned, ...rules.allow].some((p) => matches(p, seg))).sort((a, b) => b.at - a.at);
+			// The model never re-judges what Brian's own rules allow: each such command reads as `true`, unless it holds another.
+			const holds = (seg: Segment) => segs.some((o) => o !== seg && o.at >= seg.at && o.at < seg.at + seg.text.length);
+			const mine = segs.filter((seg) => !holds(seg) && [...rules.learned, ...rules.allow].some((p) => matches(p, seg))).sort((a, b) => b.at - a.at);
 			const rest = { ...q, command: mine.reduce((c, seg) => (c.slice(seg.at, seg.at + seg.text.length) === seg.text ? c.slice(0, seg.at) + "true" + c.slice(seg.at + seg.text.length) : c), q.command) };
 			if (rule === undefined) read = judged.every(([, c]) => c === true) ? { outcome: "run", by: "allow-rule", why: "" } : await model(rest, signal);
 			const { why, ...line } = { at: Date.now(), thread: q.thread, agent: q.agent, command: q.command, ...read };
