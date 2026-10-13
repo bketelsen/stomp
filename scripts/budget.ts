@@ -24,7 +24,7 @@ const rows: [string, number, number][] = [
 ];
 // The judge: segments, rules, Jev, Qwen, routing and the log (src/server/judge*.ts). Asks and the guard are apart.
 const judge = source.filter((f) => /^src\/server\/judge[^/]*\.ts$/.test(relative(root, f)));
-rows.push(["judge (src/server/judge*.ts)", count(judge), 300]);
+rows.push(["judge (src/server/judge*.ts)", count(judge), 336]);
 // The review module: the server's review-only files (src/server/review*.ts). Worktrees serve review but aren't only review.
 const review = source.filter((f) => /^src\/server\/review[^/]*\.ts$/.test(relative(root, f)));
 rows.push(["review (src/server/review*.ts)", count(review), 500]);

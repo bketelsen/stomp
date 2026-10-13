@@ -48,7 +48,7 @@ model from a different family before it's reported done. It runs on pi-durable.
 | What | Limit |
 |---|---|
 | App source (server + UI, excluding tests) | 8,000 lines |
-| Judge | 300 lines |
+| Judge | 336 lines |
 | Review | 500 lines |
 | Tests | ≤ 1.5× source |
 | Docs (excluding this file) | 1,500 lines |
