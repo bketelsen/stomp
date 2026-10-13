@@ -5,6 +5,7 @@ import type { EntryRecord } from "@earendil-works/pi-durable";
 import { useSyncExternalStore } from "react";
 import type {
 	AskAnswer,
+	Attachment,
 	ClientMessage,
 	ConversationView,
 	EntryPage,
@@ -224,8 +225,8 @@ async function attempt<T>(request: Promise<T>): Promise<T | undefined> {
 	}
 }
 
-export const sendMessage = async (thread: number, text: string, mode: SendMode) =>
-	(await attempt(api("POST", `/threads/${thread}/messages`, { text, mode }))) !== undefined;
+export const sendMessage = async (thread: number, text: string, mode: SendMode, attachments: Attachment[] = []) =>
+	(await attempt(api("POST", `/threads/${thread}/messages`, { text, mode, attachments }))) !== undefined;
 
 export const abort = (thread: number) => attempt(api("POST", `/threads/${thread}/abort`, {}));
 

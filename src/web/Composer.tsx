@@ -1,9 +1,19 @@
-// Enter sends a follow-up, Shift+Enter is a newline, Alt+Enter (or the steer toggle) steers.
+// Enter sends a follow-up, Shift+Enter is a newline, Alt+Enter (or the steer toggle) steers. Files attach by the
+// paperclip, by pasting or by dropping them on the composer.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { SendMode } from "../shared/protocol.ts";
+import type { Attachment, SendMode } from "../shared/protocol.ts";
 import { abort, sendMessage } from "./store.ts";
 
 const drafts = new Map<number, string>();
+const files = new Map<number, Attachment[]>();
+
+/** A file as an attachment: its bytes as base64. */
+async function read(file: File): Promise<Attachment> {
+	const bytes = new Uint8Array(await file.arrayBuffer());
+	let binary = "";
+	for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+	return { name: file.name || "pasted", type: file.type, data: btoa(binary) };
+}
 
 /** "1m 05s" since `since`, ticking every second while mounted. */
 function Elapsed({ since }: { since: number }) {
@@ -21,11 +31,20 @@ type Props = { thread: number; working: boolean; since?: number; disabled?: stri
 
 export function Composer({ thread, working, since, disabled }: Props) {
 	const [text, setTextState] = useState(() => drafts.get(thread) ?? "");
+	const [attached, setAttachedState] = useState(() => files.get(thread) ?? []);
 	const [steer, setSteer] = useState(false);
 	const box = useRef<HTMLTextAreaElement>(null);
+	const picker = useRef<HTMLInputElement>(null);
 	const setText = (value: string) => {
 		drafts.set(thread, value);
 		setTextState(value);
+	};
+	const setAttached = (value: Attachment[]) => {
+		files.set(thread, value);
+		setAttachedState(value);
+	};
+	const add = async (list: FileList | File[] | null | undefined) => {
+		if (list?.length) setAttached([...(files.get(thread) ?? []), ...(await Promise.all([...list].map(read)))]);
 	};
 	useLayoutEffect(() => {
 		const el = box.current!;
@@ -37,15 +56,40 @@ export function Composer({ thread, working, since, disabled }: Props) {
 
 	async function submit(mode: SendMode) {
 		const trimmed = text.trim();
-		if (!trimmed || disabled) return;
+		if ((!trimmed && !attached.length) || disabled) return;
+		const sending = attached;
 		setText("");
-		if (!(await sendMessage(thread, trimmed, mode))) setText(text);
+		setAttached([]);
+		if (!(await sendMessage(thread, trimmed, mode, sending))) setText(text), setAttached(sending);
 	}
 
 	const button = "shrink-0 rounded-lg px-3 text-sm min-h-10";
 	return (
-		<div className="shrink-0 border-t border-line bg-bg pb-[env(safe-area-inset-bottom)]">
+		<div
+			className="shrink-0 border-t border-line bg-bg pb-[env(safe-area-inset-bottom)]"
+			onDragOver={(event) => event.preventDefault()}
+			onDrop={(event) => {
+				event.preventDefault();
+				if (!disabled) void add(event.dataTransfer.files);
+			}}
+		>
+			{attached.length > 0 && (
+				<div className="mx-auto flex max-w-3xl flex-wrap gap-1.5 px-3 pt-2 md:px-6">
+					{attached.map((file, i) => (
+						<span key={`${i}-${file.name}`} className="flex items-center gap-1 rounded-md border border-line bg-panel px-2 py-0.5 text-xs">
+							<span className="max-w-48 truncate">{file.name}</span>
+							<button type="button" aria-label={`Remove ${file.name}`} onClick={() => setAttached(attached.filter((_, j) => j !== i))} className="text-muted">
+								×
+							</button>
+						</span>
+					))}
+				</div>
+			)}
 			<div className="mx-auto flex max-w-3xl items-end gap-2 px-3 py-2 md:px-6">
+				<input ref={picker} type="file" multiple hidden onChange={(event) => void add(event.target.files).then(() => (event.target.value = ""))} />
+				<button type="button" title="Attach files (or paste or drop them)" disabled={!!disabled} onClick={() => picker.current?.click()} className={`${button} border border-line text-muted`}>
+					📎
+				</button>
 				<textarea
 					ref={box}
 					rows={1}
@@ -53,6 +97,11 @@ export function Composer({ thread, working, since, disabled }: Props) {
 					disabled={!!disabled}
 					placeholder={disabled ?? (steer ? "Steer the current run…" : "Message")}
 					onChange={(event) => setText(event.target.value)}
+					onPaste={(event) => {
+						if (!event.clipboardData.files.length) return;
+						event.preventDefault();
+						void add(event.clipboardData.files);
+					}}
 					onKeyDown={(event) => {
 						if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
 						event.preventDefault();
@@ -77,7 +126,7 @@ export function Composer({ thread, working, since, disabled }: Props) {
 				)}
 				<button
 					type="button"
-					disabled={!!disabled || !text.trim()}
+					disabled={!!disabled || (!text.trim() && !attached.length)}
 					onClick={() => void submit(steer ? "steer" : "followUp")}
 					className={`${button} bg-accent text-bg`}
 				>

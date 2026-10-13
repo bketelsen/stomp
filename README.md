@@ -81,6 +81,9 @@ reports through Picard. It's waiting for you in the morning.
   whose file says `wiki: true` edits that checkout, so its edits are live on your next page load, and
   pushes them to the default branch. stomp pulls GitHub's changes in while nothing local is pending,
   and the page says what isn't on GitHub yet.
+- **Attachments.** Attach files to a message with the paperclip, by pasting or by dropping them (20 MB
+  per message). Each is saved under `$STOMP_STATE/scratch/attachments/<thread>/` and its path goes in
+  the message; images up to 5 MB also go to the model inline, for models that take images.
 - **Asks you answer in one tap.** Inline cards, a "needs you" list, the tab title, and desktop
   browser notifications. Phone notifications wait on the installable app, which is a later item.
 - **Notebooks and consults.** Agents `remember` things across threads, and you can read and edit

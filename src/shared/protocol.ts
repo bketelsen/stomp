@@ -217,15 +217,19 @@ export interface JudgeDecision {
 // REST (JSON bodies; errors are {error: string} with a 4xx/5xx status)
 //   GET  /api/state                                  -> StateSnapshot
 //   POST /api/agents/:agent/threads   {title?}       -> {thread: number}
-//   POST /api/threads/:thread/messages {text, mode}  -> {submission: string}
+//   POST /api/threads/:thread/messages {text, mode, attachments?}  -> {submission: string}
 //   POST /api/threads/:thread/abort                  -> {}
 //   POST /api/threads/:thread/archive {archived}     -> {}   409 for a desk
 //   GET  /api/threads/:thread/entries?before=<entryId>&limit=<n>  -> {entries: EntryPage}
 export type SendMode = "followUp" | "steer";
 
+/** A file attached to a message: its name, MIME type and base64 bytes. */
+export type Attachment = { name: string; type: string; data: string };
+
 export interface SendMessageBody {
 	text: string;
 	mode?: SendMode;
+	attachments?: Attachment[];
 }
 
 /** Older history, newest first, as returned by `conv.entries()`. */

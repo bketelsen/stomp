@@ -4,14 +4,17 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, join, normalize, sep } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import type { Conversation, EntryId } from "@earendil-works/pi-durable";
-import type { AskAnswer, JudgeDecision, SendMessageBody, StateSnapshot, WikiView } from "../shared/protocol.ts";
+import type { Conversation, EntryId, UserInput } from "@earendil-works/pi-durable";
+import type { AskAnswer, Attachment, JudgeDecision, SendMessageBody, StateSnapshot, WikiView } from "../shared/protocol.ts";
+import { ATTACHMENTS_MAX_BYTES, parseAttachments } from "./attachments.ts";
 import { NOTEBOOK_MAX_BYTES } from "./notebook.ts";
 
 export type Api = {
 	state(): Promise<StateSnapshot>;
 	/** A thread's conversation; throws a 404 for ids that aren't stomp threads, a 409 if its agent can't chat. */
 	thread(id: number, chatting?: boolean): Promise<Conversation>;
+	/** A message's content: `text` alone, or with the files saved for the thread and listed, images inline. */
+	content(thread: number, text: string, files: Attachment[]): UserInput;
 	newThread(agent: string, title: string): Promise<number>;
 	/** Stop everything working for a thread: its delegation, its review, its run. */
 	stop(id: number): Promise<void>;
@@ -54,9 +57,15 @@ const json = (res: ServerResponse, status: number, body: unknown): void => {
 	res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 };
 
+/** Room for a message's attachments as base64, and the rest of it. */
+const BODY_MAX_BYTES = Math.ceil(ATTACHMENTS_MAX_BYTES / 3) * 4 + (1 << 20);
+
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
 	let text = "";
-	for await (const chunk of req) text += chunk;
+	for await (const chunk of req) {
+		text += chunk;
+		if (text.length > BODY_MAX_BYTES) throw new HttpError(413, `a request holds at most ${BODY_MAX_BYTES >> 20} MB`);
+	}
 	try {
 		const body = text ? (JSON.parse(text) as unknown) : {};
 		if (body !== null && typeof body === "object" && !Array.isArray(body)) return body as Record<string, unknown>;
@@ -103,10 +112,13 @@ async function route(api: Api, req: IncomingMessage, res: ServerResponse, url: U
 	if (collection !== "threads" || id === undefined || extra !== undefined) throw new HttpError(404, "not found");
 	if (action === "messages" && method === "POST") {
 		const body = (await readBody(req)) as Partial<SendMessageBody>;
-		if (typeof body.text !== "string" || body.text.trim() === "") throw new HttpError(400, "text is required");
+		const files = parseAttachments(body.attachments);
+		if (typeof files === "string") throw new HttpError(400, files);
+		if (typeof body.text !== "string" || (body.text.trim() === "" && files.length === 0)) throw new HttpError(400, "text is required");
 		const conversation = await api.thread(Number(id), true);
 		const whenBusy = body.mode === "steer" ? "steer" : "followUp";
-		const submission = await conversation.submit({ type: "input", content: body.text, whenBusy }, ctx);
+		const content = api.content(Number(id), body.text.trim(), files);
+		const submission = await conversation.submit({ type: "input", content, whenBusy }, ctx);
 		return json(res, 200, { submission: String(submission.id) });
 	}
 	if (action === "archive" && method === "POST") {
