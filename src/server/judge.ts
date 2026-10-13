@@ -7,8 +7,8 @@ import { join, resolve } from "node:path";
 import { parse } from "yaml";
 import type { JudgeDecision } from "../shared/protocol.ts";
 
-/** One simple command: argv from the command word on, its source text, whether its stdin is piped in, and every word and redirect target. */
-export type Segment = { argv: string[]; text: string; piped: boolean; words: string[] };
+/** One simple command: argv from the command word on, its source text and where it starts, whether its stdin is piped in, and every word and redirect target. */
+export type Segment = { argv: string[]; text: string; piped: boolean; words: string[]; at: number };
 
 const PREFIXES = new Set(["sudo", "env", "command", "time", "nice", "nohup", "exec"]);
 const KEYWORDS = new Set(["!", "{", "}", "if", "then", "else", "elif", "fi", "do", "done", "while", "until"]);
@@ -41,7 +41,8 @@ export function segments(src: string): Segment[] {
 		};
 		const cut = (end: number, skip: number, next = false) => {
 			endWord();
-			if (src.slice(start, end).trim()) out.push({ argv: commandOf(words), text: src.slice(start, end).trim(), piped, words: [...words, ...targets] });
+			const text = src.slice(start, end).trim();
+			if (text) out.push({ argv: commandOf(words), text, piped, words: [...words, ...targets], at: src.indexOf(text, start) });
 			[words, targets, i, piped, start] = [[], [], end + skip, next, end + skip];
 		};
 		const nested = (closer: string, from = i) => ((i += closer === ")" ? 2 : 1), walk(closer), add(src.slice(from, i)));
@@ -114,6 +115,7 @@ export function matches(pattern: string, seg: Segment): boolean {
 	}
 }
 
+const PUSH = "[-u|-q|-v|--set-upstream|--quiet|--verbose|--porcelain|--no-verify|--force-with-lease]";
 const MAKE = "[all|build|test|tests|check|lint|fmt|format|clean|install|deps|dev|typecheck|vet|docs|build-*|test-*|lint-*|check-*]";
 /** Run at once: common read-only and local commands, pushes to stomp's branches, and PR and issue chatter. */
 const ALLOW = [
@@ -121,7 +123,7 @@ const ALLOW = [
 	"mkdir|cp|mv|rm|ln|touch|chmod|tee|tar|unzip|sed|awk|jq|yq|echo|printf|cd|pwd|which|type|sleep|true|false|test|[|export|set|for **",
 	"git status|log|diff|show|branch|add|commit|checkout|switch|restore|reset|stash|fetch|pull|rebase|merge|cherry-pick **",
 	"git rev-parse|ls-files|worktree|tag|config|remote|clone|init|clean|blame **",
-	"git push [-u|--set-upstream|--force-with-lease] [origin] [HEAD|stomp/*]",
+	`git push ${PUSH} ${PUSH} ${PUSH} [origin] [HEAD|stomp/*]`,
 	"gh pr|issue create|comment|edit|ready|close|view|list|checks|diff|status **",
 	"gh repo|run view|clone|list|watch **",
 	"npm|pnpm|yarn|bun test|install|i|add|ci|typecheck|lint|build **",
@@ -139,8 +141,8 @@ const SENDS = /^-[a-zA-Z]*[XdTFK]|^--(request|data|upload|form|json|post|method|
 const UNLESS: Record<string, RegExp> = { curl: SENDS, wget: SENDS, find: /^-(exec|execdir|ok|okdir)$/, awk: /\bsystem\s*\(|\|&?\s*getline|\bprintf?\b(?:[^;}"|]|"[^"]*")*\|/, sed: /(?:^|[;\n{}\d$/])\s*e(?:\s|;|$)|(?:^|[;\n{])\s*(?:[\d$,]+|\/[^/]*\/)?\s*s(\W).*\1.*\1[gpiImM\d]*e/ };
 /** Always ask. Jev reads `incus delete` as local, so the rules are what catch it. */
 const ASK = [
-	"git push ** main|master|*:main|*:master|refs/heads/main|refs/heads/master|*:refs/heads/main|*:refs/heads/master **",
-	"git push ** -f|-*f|-f*|--force|--mirror|+* **",
+	"git [-C|-c] [*] push ** main|master|*:main|*:master|refs/heads/main|refs/heads/master|*:refs/heads/main|*:refs/heads/master **",
+	"git [-C|-c] [*] push ** -f|-*f|-f*|--force|--mirror|+* **",
 	"gh pr merge **",
 	"gh release create|delete **",
 	"gh repo delete **",
@@ -304,7 +306,10 @@ export function createJudge(options: JudgeOptions) {
 			const judged = segs.map((seg) => [seg, classify(seg, rules, onMain, q.cwd)] as const);
 			const rule = judged.find((j): j is [Segment, string] => typeof j[1] === "string")?.[1];
 			let read: Read = { outcome: "ask", by: "ask-rule", detail: rule, why: `rule: ${rule}` };
-			if (rule === undefined) read = judged.every(([, c]) => c === true) ? { outcome: "run", by: "allow-rule", why: "" } : await model(q, signal);
+			// The model never re-judges what Brian's own rules allow: each such command reads as `true`.
+			const mine = segs.filter((seg) => [...rules.learned, ...rules.allow].some((p) => matches(p, seg))).sort((a, b) => b.at - a.at);
+			const rest = { ...q, command: mine.reduce((c, seg) => (c.slice(seg.at, seg.at + seg.text.length) === seg.text ? c.slice(0, seg.at) + "true" + c.slice(seg.at + seg.text.length) : c), q.command) };
+			if (rule === undefined) read = judged.every(([, c]) => c === true) ? { outcome: "run", by: "allow-rule", why: "" } : await model(rest, signal);
 			const { why, ...line } = { at: Date.now(), thread: q.thread, agent: q.agent, command: q.command, ...read };
 			record(line);
 			return { ...line, why, open: judged.flatMap(([seg, c]) => (c === true ? [] : [seg])) };

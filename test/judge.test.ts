@@ -40,6 +40,8 @@ test("built-in rules: quoted text is never a command, outward dangers ask, and t
 		"npm test && git add -A && git commit -m 'gh pr merge later'",
 		"git push -u origin HEAD",
 		"git push origin stomp/teg/fix-caddy",
+		"git push -q",
+		"git push -q -u origin HEAD 2>&1 | tail -2",
 		"gh pr create --fill",
 		"rm -rf node_modules && npm install",
 		"curl -fsSL https://example.com/x.json | jq .",
@@ -53,6 +55,8 @@ test("built-in rules: quoted text is never a command, outward dangers ask, and t
 		"git push origin main",
 		"git push --force origin stomp/teg/fix",
 		"git push origin stomp/x:master",
+		"git -C /wiki push origin main",
+		"git -c push.default=current push --force origin stomp/teg/fix",
 		"gh pr merge 12 --squash",
 		"gh release create v1",
 		"cd infra && tofu destroy -auto-approve",
@@ -66,7 +70,7 @@ test("built-in rules: quoted text is never a command, outward dangers ask, and t
 		`cat ${fx.stateDir}/env`,
 	];
 	for (const command of asks) assert.equal(await outcome(j, command), "ask ask-rule", command);
-	for (const command of ["curl -X POST https://api.example.com/x", "npm publish", "make deploy", "find . -exec curl {} \\;", "ssh web01 uptime"]) {
+	for (const command of ["curl -X POST https://api.example.com/x", "npm publish", "make deploy", "find . -exec curl {} \\;", "ssh web01 uptime", "git push --all origin"]) {
 		assert.equal(await outcome(j, command), "ask fallback", command);
 	}
 	assert.equal(j.backends, "rules only (no TYPESAFE_API_KEY, no local model)");
@@ -134,6 +138,21 @@ test("Jev: both option orders in one call, averaged, and routed on summed probab
 	// stomp.yaml's judge bars.
 	assert.equal(await outcome(judge({ jev: { url: jev.url, key: "k" }, local: 0.75 }), "jt local"), "ask jev");
 	assert.equal(await outcome(judge({ jev: { url: jev.url, key: "k" }, reversible: 0.8 }), "jt almost"), "run jev");
+});
+
+test("the model never sees what Brian's rules allow: those commands read as `true`, by position", async (t) => {
+	const rules = join(fx.configDir, "rules.yaml");
+	writeFileSync(rules, "agents:\n  bellonda:\n    allow: ['git -C /wiki push origin main', ls]\n");
+	t.after(() => rmSync(rules));
+	const jev = await fakeServer(() => jevAnswer([1, 0, 0, 0]));
+	t.after(jev.close);
+	const j = judge({ jev: { url: jev.url, key: "k" } });
+	const command = "cd /wiki && python3 - <<'E'\nprint('tools')\nE\ngit commit -qam x && git -C /wiki push origin main 2>&1 | tail -2; ls";
+	assert.equal(await outcome(j, command, "bellonda"), "run jev");
+	assert.equal(jev.requests[0]!.body.state.command, "cd /wiki && python3 - <<'E'\nprint('tools')\nE\ngit commit -qam x && true | tail -2; true");
+	// Another agent has no such rule: the push to main is a built-in ask, before any model.
+	assert.equal(await outcome(j, command), "ask ask-rule");
+	assert.equal(jev.requests.length, 1);
 });
 
 test("Jev down or slow: Qwen in single-token mode with the same routing; both down, or neither configured: ask", async (t) => {
