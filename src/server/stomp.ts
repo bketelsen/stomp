@@ -12,6 +12,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import type { StateSnapshot } from "../shared/protocol.ts";
 import { type AgentConfig, loadAgents, readOptional } from "./agents.ts";
 import { createAsks, stompGuard } from "./asks.ts";
+import { attach } from "./attachments.ts";
 import { hiddenEnv, stompCoding } from "./coding.ts";
 import { loadConfig, type StompConfig } from "./config.ts";
 import { stompConsult } from "./consult.ts";
@@ -197,6 +198,13 @@ export async function startStomp(options: StompOptions): Promise<Stomp> {
 				throw new HttpError(409, `${record.agent}: ${agent?.error ?? "no agent file"}`);
 			}
 			return conversation;
+		},
+		content(thread, text, files) {
+			try {
+				return attach(join(scratch, "attachments", String(thread)), text, files);
+			} catch (error) {
+				throw error instanceof RangeError ? new HttpError(413, error.message) : error;
+			}
 		},
 		async newThread(id, title) {
 			const agent = agents.find((a) => a.id === id);

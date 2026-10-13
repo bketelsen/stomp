@@ -98,6 +98,10 @@ export const Entry = memo(function Entry({ entry, calls }: { entry: EntryRecord;
 		return (
 			<div className="flex flex-col items-end gap-0.5">
 				<div className="max-w-[85%] rounded-2xl bg-user px-3.5 py-2 break-words whitespace-pre-wrap">{textOf(m.content)}</div>
+				{typeof m.content !== "string" &&
+					m.content.flatMap((block, i) =>
+						block.type === "image" ? [<img key={i} alt="attached" src={`data:${block.mimeType};base64,${block.data}`} className="max-h-60 max-w-[85%] rounded-lg border border-line" />] : [],
+					)}
 				<Time ts={m.timestamp} />
 			</div>
 		);
